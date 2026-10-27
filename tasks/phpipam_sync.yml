@@ -39,10 +39,3 @@
     - kea-phpipam-sync.service
     - kea-phpipam-sync.timer
   notify: Restart kea-phpipam-sync timer
-
-- name: Enable the phpIPAM sync timer
-  ansible.builtin.systemd_service:
-    name: kea-phpipam-sync.timer
-    state: started
-    enabled: true
-    daemon_reload: true

@@ -438,14 +438,56 @@ kea_krb5_realm: ""
 kea_krb5_kdcs: []
 
 # =============================================================================
-# Firewall and SELinux
+# Firewall
 # =============================================================================
 kea_firewalld_manage: true
 kea_firewalld_zone: public
 # Open the API port in the firewall (HA via Control Agent / remote clients).
 kea_firewalld_open_api: "{{ kea_ctrl_agent_host not in ['127.0.0.1', '::1', 'localhost'] }}"
-# Label non-standard API / HA ports for SELinux (http_port_t).
+
+# =============================================================================
+# SELinux
+# =============================================================================
+# Only acts when SELinux is enabled; the mode is never changed.
 kea_selinux_manage: true
+# Type used to label the API and HA listener ports. Empty = auto: a kea port
+# type from the loaded policy if there is one, otherwise http_port_t.
+kea_selinux_port_type: ""
+# Restore file contexts on Kea's directories (and add equivalence rules
+# when they are moved away from the default locations).
+kea_selinux_restore_contexts: true
+# SELinux booleans to set, e.g. { nis_enabled: true }.
+kea_selinux_booleans: {}
+# Extra file contexts, community.general.sefcontext style:
+#   - { target: "/srv/kea(/.*)?", setype: kea_var_lib_t }
+kea_selinux_fcontexts: []
+# Troubleshooting only: run the confined Kea domain in permissive mode while
+# the rest of the system stays enforcing. Collect AVCs with
+# "ausearch -m AVC -c kea" and build a local module before turning it off.
+kea_selinux_permissive_domain: false
+kea_selinux_domain: kea_t
+
+# =============================================================================
+# fapolicyd
+# =============================================================================
+# When fapolicyd is installed, files the role deploys outside of RPMs (the
+# phpIPAM sync script, custom hook libraries) are added to its trust
+# database so they may run. Kea's own RPM files are trusted already.
+kea_fapolicyd_manage: true
+kea_fapolicyd_trust_file: kea-dhcp
+# Extra files to trust, e.g. custom hooks: ["/usr/local/lib64/kea/hooks/libmyhook.so"]
+kea_fapolicyd_trusted_files: []
+
+# =============================================================================
+# FIPS
+# =============================================================================
+# Fail when the host is not in FIPS mode (the role never enables FIPS
+# itself: that needs fips-mode-setup / a FIPS install and a reboot).
+kea_fips_required: false
+# System-wide crypto policy to apply, e.g. "FIPS:AD-SUPPORT" so Kerberos
+# (GSS-TSIG) can use the AES-SHA1 enctypes Active Directory supports on a
+# FIPS host. Empty leaves the crypto policy alone.
+kea_crypto_policy: ""
 
 # =============================================================================
 # Escape hatches

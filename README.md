@@ -11,6 +11,7 @@ Features:
 - PXE / network boot for BIOS, UEFI (x86, x64, ARM64), UEFI HTTP boot, iPXE chainloading and DHCPv6 boot URLs.
 - Dynamic DNS via `kea-dhcp-ddns`, aimed at Microsoft DNS. Secure-only zones work through GSS-TSIG (Kerberos).
 - Logging options: file, syslog or stdout, with severity, rotation, extra loggers and forensic lease logging.
+- SELinux port and file labeling, a fapolicyd trust file for non-RPM files, and FIPS checks (TSIG algorithms, crypto policy for AD Kerberos).
 - Molecule tests with podman: a single server on EL8, EL9 and EL10, plus a two-node HA cluster with a failover test.
 
 ## Requirements
@@ -230,6 +231,25 @@ kea_ddns_reverse_domains: [{ name: 10.0.10.in-addr.arpa. }]
 
 Classic TSIG keys (`kea_ddns_tsig_keys`) are supported for BIND-style servers. Windows DNS does not support them.
 
+## SELinux, fapolicyd and FIPS
+
+**SELinux.** When SELinux is enabled, the role works with it and never changes the mode. Turn this off with `kea_selinux_manage: false`.
+
+- It labels every TCP port Kea listens on: the Control Agent API, and the HA listeners on 8001/8002. The type is a `kea*_port_t` type if the loaded policy has one, otherwise `http_port_t`. Override it with `kea_selinux_port_type`.
+- It runs `restorecon` on `/etc/kea`, `/var/lib/kea` and `/var/log/kea`. If you move those directories with `kea_config_dir`, `kea_lib_dir` or `kea_log_dir`, the role adds `semanage fcontext -e` equivalence rules first, so the new paths get the same labels.
+- It labels the GSS-TSIG keytab `krb5_keytab_t`.
+- You can set booleans (`kea_selinux_booleans`) and extra file contexts (`kea_selinux_fcontexts`).
+- For troubleshooting only, `kea_selinux_permissive_domain: true` puts just the Kea domain (`kea_selinux_domain`, default `kea_t`) in permissive mode. Collect denials with `ausearch -m AVC -c kea`, build a local module, then turn it back off.
+
+**fapolicyd.** fapolicyd already trusts everything installed by RPM, which covers Kea, its hooks and Python. When fapolicyd is present, the role writes `/etc/fapolicyd/trust.d/kea-dhcp` with the path, size and SHA-256 of every file it deploys outside RPM, then runs `fapolicyd-cli --update`. That covers the phpIPAM sync script, plus anything you list in `kea_fapolicyd_trusted_files` (for example custom hook libraries). Because the role recomputes the hashes on every run, updated files stay trusted.
+
+**FIPS.** The role does not switch FIPS mode on, because that needs `fips-mode-setup` or a FIPS install, and a reboot. What it does on FIPS hosts:
+
+- `kea_fips_required: true` fails the play when the host is not in FIPS mode.
+- In FIPS mode, TSIG keys must use HMAC-SHA256 or stronger. The role rejects HMAC-MD5, which is also what Kea uses when a key has no algorithm.
+- Active Directory Kerberos only offers AES-SHA1 encryption types, and the default FIPS policy on RHEL 9 and later rejects them. To use GSS-TSIG against Windows DNS on such a host, set `kea_crypto_policy: "FIPS:AD-SUPPORT"` and reboot. The role warns when this applies.
+- Kea, its TLS (Control Agent API, HA, databases) and the phpIPAM sync all use the system OpenSSL, so they follow the system FIPS policy. Use RSA keys of 2048 bits or more, or ECDSA P-256/P-384, for the API certificates.
+
 ## Logging
 
 | Variable | Default |
@@ -254,10 +274,11 @@ All variables, with comments, are in [`defaults/main.yml`](defaults/main.yml). T
 | `kea_ha_enabled` | `false` |
 | `kea_pxe_enabled` | `false` |
 | `kea_phpipam_sync_enabled` | `false` |
-| `kea_firewalld_manage` / `kea_selinux_manage` | `true` / `true` |
+| `kea_firewalld_manage` / `kea_selinux_manage` / `kea_fapolicyd_manage` | `true` / `true` / `true` |
+| `kea_fips_required` | `false` |
 | `kea_validate_config` | `true` |
 
-Tags: `kea_install`, `kea_tuning`, `kea_database`, `kea_config`, `kea_firewall`, `kea_service`, `kea_phpipam`.
+Tags: `kea_install`, `kea_tuning`, `kea_database`, `kea_config`, `kea_security` (`kea_selinux`, `kea_fips`, `kea_fapolicyd`), `kea_firewall`, `kea_service`, `kea_phpipam`.
 
 ## Testing
 

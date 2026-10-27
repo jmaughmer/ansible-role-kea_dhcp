@@ -98,3 +98,25 @@
       phpIPAM sync needs the Control Agent, the host_cmds hook, a hosts
       database (kea_hosts_database), kea_phpipam_token and kea_phpipam_subnet_map.
     quiet: true
+
+- name: Assert FIPS mode is enabled
+  ansible.builtin.assert:
+    that: ansible_facts['fips'] | default(false) | bool
+    fail_msg: >-
+      kea_fips_required is set but the host is not in FIPS mode. Enable it with
+      "fips-mode-setup --enable" (EL8/EL9) or install with fips=1 (EL10), then reboot.
+    quiet: true
+  when: kea_fips_required | bool
+
+- name: Assert DDNS keys use FIPS-approved algorithms
+  ansible.builtin.assert:
+    that: >-
+      kea_ddns_tsig_keys | map(attribute='algorithm', default='HMAC-MD5')
+      | map('upper') | select('in', ['HMAC-MD5', 'HMAC-MD5.SIG-ALG.REG.INT']) | list | length == 0
+    fail_msg: >-
+      HMAC-MD5 TSIG keys are not allowed in FIPS mode. Use HMAC-SHA256 or stronger
+      (Kea also defaults to HMAC-MD5 when a key has no algorithm).
+    quiet: true
+  when:
+    - kea_ddns_enabled | bool
+    - ansible_facts['fips'] | default(false) | bool or kea_fips_required | bool

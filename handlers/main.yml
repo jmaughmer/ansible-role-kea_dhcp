@@ -3,6 +3,16 @@
   ansible.builtin.systemd_service:
     daemon_reload: true
 
+- name: Update fapolicyd trust
+  ansible.builtin.command: fapolicyd-cli --update
+  changed_when: true
+  # fapolicyd reads trust.d on start, so there is nothing to do while stopped.
+  failed_when: false
+
+- name: Warn about crypto policy reboot
+  ansible.builtin.debug:
+    msg: The system crypto policy changed. Reboot so every process picks it up.
+
 - name: Restart kea-dhcp4
   ansible.builtin.systemd_service:
     name: "{{ __kea_source.dhcp4_service }}"

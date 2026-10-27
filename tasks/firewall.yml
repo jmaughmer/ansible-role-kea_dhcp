@@ -25,15 +25,3 @@
         immediate: true
         state: enabled
       loop: "{{ __kea_tcp_ports }}"
-
-- name: Label API and HA ports for SELinux
-  community.general.seport:
-    ports: "{{ __kea_tcp_ports | join(',') }}"
-    proto: tcp
-    setype: http_port_t
-    state: present
-  when:
-    - kea_selinux_manage | bool
-    - __kea_tcp_ports | length > 0
-    - ansible_facts['selinux'] is defined
-    - ansible_facts['selinux']['status'] | default('disabled') == 'enabled'

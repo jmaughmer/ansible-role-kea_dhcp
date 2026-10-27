@@ -136,3 +136,20 @@
         name: kea-dhcp4
       register: unit
       failed_when: unit.status.LimitNOFILE != '65536'
+
+    - name: Read the fapolicyd trust file
+      ansible.builtin.slurp:
+        src: /etc/fapolicyd/trust.d/kea-dhcp
+      register: trust
+
+    - name: Hash the trusted helper
+      ansible.builtin.stat:
+        path: /usr/local/bin/kea-molecule-helper
+        checksum_algorithm: sha256
+      register: helper
+
+    - name: Assert the trust entry matches the file
+      ansible.builtin.assert:
+        that: >-
+          '/usr/local/bin/kea-molecule-helper ' ~ helper.stat.size ~ ' ' ~ helper.stat.checksum
+          in (trust.content | b64decode)

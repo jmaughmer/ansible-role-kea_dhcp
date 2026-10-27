@@ -41,6 +41,8 @@
     kea_ddns_forward_domains: [{ name: corp.example.com. }]
     kea_ddns_reverse_domains: [{ name: 2.0.192.in-addr.arpa. }]
     kea_legal_log_enabled: true
+    # fapolicyd is installed (not started) by prepare.yml to test the trust file.
+    kea_fapolicyd_trusted_files: [/usr/local/bin/kea-molecule-helper]
     kea_dhcp4_extra_loggers:
       - name: kea-dhcp4.leases
         severity: INFO

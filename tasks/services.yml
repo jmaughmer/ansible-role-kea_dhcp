@@ -16,3 +16,11 @@
     enabled: false
   loop: "{{ __kea_all_services | difference(__kea_enabled_services) | unique }}"
   when: (ansible_facts.services | default({}))[item ~ '.service'] is defined
+
+- name: Enable the phpIPAM sync timer
+  ansible.builtin.systemd_service:
+    name: kea-phpipam-sync.timer
+    state: started
+    enabled: true
+    daemon_reload: true
+  when: kea_phpipam_sync_enabled | bool

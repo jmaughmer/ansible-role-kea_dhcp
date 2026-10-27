@@ -24,15 +24,24 @@
   ansible.builtin.import_tasks: config.yml
   tags: [kea, kea_config]
 
-- name: Configure firewall and SELinux
+- name: Configure SELinux and FIPS settings
+  ansible.builtin.import_tasks: security.yml
+  tags: [kea, kea_security, kea_selinux, kea_fips]
+
+- name: Configure phpIPAM reservation sync
+  ansible.builtin.include_tasks: phpipam_sync.yml
+  when: kea_phpipam_sync_enabled | bool
+  tags: [kea, kea_phpipam]
+
+- name: Configure fapolicyd trust
+  ansible.builtin.include_tasks: fapolicyd.yml
+  when: kea_fapolicyd_manage | bool
+  tags: [kea, kea_security, kea_fapolicyd]
+
+- name: Configure the firewall
   ansible.builtin.import_tasks: firewall.yml
   tags: [kea, kea_firewall]
 
 - name: Manage Kea services
   ansible.builtin.import_tasks: services.yml
   tags: [kea, kea_service]
-
-- name: Configure phpIPAM reservation sync
-  ansible.builtin.include_tasks: phpipam_sync.yml
-  when: kea_phpipam_sync_enabled | bool
-  tags: [kea, kea_phpipam]

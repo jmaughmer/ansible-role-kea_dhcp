@@ -1,0 +1,14 @@
+---
+- name: Prepare
+  hosts: all
+  tasks:
+    - name: Install fapolicyd (left stopped) so the role writes its trust file
+      ansible.builtin.dnf:
+        name: fapolicyd
+        state: present
+
+    - name: Create a file for the role to add to the fapolicyd trust database
+      ansible.builtin.copy:
+        dest: /usr/local/bin/kea-molecule-helper
+        content: "#!/bin/sh\necho ok\n"
+        mode: "0755"
