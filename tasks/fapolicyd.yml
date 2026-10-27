@@ -32,7 +32,7 @@
       ansible.builtin.copy:
         dest: "/etc/fapolicyd/trust.d/{{ kea_fapolicyd_trust_file }}"
         content: |
-          # {{ ansible_managed }}
+          # Managed by Ansible (ansible-role-kea_dhcp)
           {% for f in __kea_fapolicyd_stats.results if f.stat.exists | default(false) %}
           {{ f.item }} {{ f.stat.size }} {{ f.stat.checksum }}
           {% endfor %}
