@@ -1,39 +1,28 @@
 ---
+# Collections are installed by scripts/test.sh, pinned per ansible-core.
 dependency:
   name: galaxy
-  options:
-    requirements-file: requirements.yml
+  enabled: false
 driver:
-  name: docker
+  name: podman
 platforms:
   - name: kea1
-    image: almalinux/9-init
+    image: docker.io/almalinux/9-init
     pre_build_image: true
-    command: /usr/sbin/init
+    command: /sbin/init
+    systemd: always
     privileged: true
-    cgroupns_mode: host
-    volumes:
-      - /sys/fs/cgroup:/sys/fs/cgroup:rw
-    docker_networks:
-      - name: kea-ha
-        ipam_config:
-          - subnet: 172.30.0.0/24
-            gateway: 172.30.0.1
-    networks:
-      - name: kea-ha
-        ipv4_address: 172.30.0.11
+    rootless: true
+    network: kea-ha
     groups: [kea_cluster]
   - name: kea2
-    image: almalinux/9-init
+    image: docker.io/almalinux/9-init
     pre_build_image: true
-    command: /usr/sbin/init
+    command: /sbin/init
+    systemd: always
     privileged: true
-    cgroupns_mode: host
-    volumes:
-      - /sys/fs/cgroup:/sys/fs/cgroup:rw
-    networks:
-      - name: kea-ha
-        ipv4_address: 172.30.0.12
+    rootless: true
+    network: kea-ha
     groups: [kea_cluster]
 provisioner:
   name: ansible
@@ -45,9 +34,8 @@ provisioner:
         kea_sysctl_manage: false
         kea_ha_enabled: true
         kea_ha_mode: hot-standby
-        kea_ha_peers:
-          - { name: kea1, address: 172.30.0.11, role: primary }
-          - { name: kea2, address: 172.30.0.12, role: standby }
+        # kea_ha_peers and the subnet come from the addresses podman assigns;
+        # see converge.yml.
         # Fast timers so the failover test finishes quickly.
         kea_ha_heartbeat_delay: 2000
         kea_ha_max_response_delay: 6000
@@ -55,11 +43,5 @@ provisioner:
         kea_api_users:
           - { user: admin, password: molecule-secret }
         kea_dhcp4_interfaces: [eth0]
-        kea_dhcp4_subnets:
-          - id: 1
-            subnet: 172.30.0.0/24
-            pools: [{ pool: 172.30.0.100 - 172.30.0.200 }]
-            reservations:
-              - { hw-address: "aa:bb:cc:dd:ee:01", ip-address: 172.30.0.50, hostname: printer01 }
 verifier:
   name: ansible

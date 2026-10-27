@@ -11,7 +11,7 @@ Features:
 - PXE / network boot for BIOS, UEFI (x86, x64, ARM64), UEFI HTTP boot, iPXE chainloading and DHCPv6 boot URLs.
 - Dynamic DNS via `kea-dhcp-ddns`, aimed at Microsoft DNS. Secure-only zones work through GSS-TSIG (Kerberos).
 - Logging options: file, syslog or stdout, with severity, rotation, extra loggers and forensic lease logging.
-- Molecule tests: a single server on EL8, EL9 and EL10, plus a two-node HA cluster with a failover test.
+- Molecule tests with podman: a single server on EL8, EL9 and EL10, plus a two-node HA cluster with a failover test.
 
 ## Requirements
 
@@ -261,15 +261,19 @@ Tags: `kea_install`, `kea_tuning`, `kea_database`, `kea_config`, `kea_firewall`,
 
 ## Testing
 
+Tests run locally with podman, on the AlmaLinux 10 WSL distribution (any EL10 host works too). The repository directory must be named `ansible-role-kea_dhcp`.
+
 ```bash
-pip install ansible-core molecule "molecule-plugins[docker]" ansible-lint yamllint
-yamllint . && ansible-lint
-molecule test             # DHCPv4/v6, DDNS, PXE, API, reservations, logging on EL9/EL10
-molecule test -s ha       # two-node hot-standby cluster, failover and recovery
-molecule test -s el8      # same as default on EL8 (run with ansible-core 2.16)
+scripts/test.sh            # lint + every scenario
+scripts/test.sh lint       # yamllint + ansible-lint only
+scripts/test.sh default    # DHCPv4/v6, DDNS, PXE, API, reservations, logging on EL9 and EL10
+scripts/test.sh ha         # two-node hot-standby cluster, failover and recovery
+scripts/test.sh el8        # the default scenario on EL8, under ansible-core 2.16
 ```
 
-The scenarios use the `almalinux/<n>-init` images with systemd and need internet access to the ISC repository. GitHub Actions runs lint and both scenarios on every pull request.
+The script installs podman, Python and git with dnf if they are missing. It builds two virtualenvs under `.cache/test/`: one with current ansible-core, molecule, molecule-plugins[podman], ansible-lint and yamllint, and one with ansible-core 2.16 for EL8. Each virtualenv gets its own pinned collections.
+
+The scenarios run systemd inside the `docker.io/almalinux/<n>-init` images and need internet access to Docker Hub, the ISC repository and EPEL. Podman runs rootless by default. If rootless systemd containers don't work in your WSL setup (for example cgroup v2 delegation is missing), run `sudo scripts/test.sh` to use rootful podman. WSL needs systemd enabled (`[boot] systemd=true` in `/etc/wsl.conf`) for rootless podman.
 
 ## License
 
