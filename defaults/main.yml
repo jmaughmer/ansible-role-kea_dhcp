@@ -16,7 +16,8 @@ kea_isc_repo_series: "3-0"
 kea_manage_repo: true
 kea_isc_repo_file_url: >-
   https://dl.cloudsmith.io/public/isc/kea-{{ kea_isc_repo_series }}/config.rpm.txt?distro=el&codename={{ ansible_facts['distribution_major_version'] }}
-# EPEL is only used when kea_install_source == distro on EL8/EL9.
+# EPEL provides log4cplus (needed by ISC packages) and Kea itself on EL8/EL9.
+# Set to false only if EPEL (or a mirror of it) is already configured.
 kea_epel_manage: true
 
 # Package state: present or latest.

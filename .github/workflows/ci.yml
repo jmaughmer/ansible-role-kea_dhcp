@@ -39,6 +39,9 @@ jobs:
           python-version: "3.12"
       - name: Install tools
         run: pip install ansible-core molecule "molecule-plugins[docker]" docker
+      - name: Install collections
+        working-directory: ansible-role-kea_dhcp
+        run: ansible-galaxy collection install -r requirements.yml
       - name: Run molecule
         working-directory: ansible-role-kea_dhcp
         run: molecule test -s ${{ matrix.scenario }}

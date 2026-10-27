@@ -17,7 +17,7 @@ Features:
 
 - Ansible core 2.15 or newer.
 - Collections from `requirements.yml`: `ansible.posix` and `community.general`.
-- Managed hosts need access to the package repository: ISC's Cloudsmith repository by default, or a local mirror.
+- Managed hosts need access to the package repositories: ISC's Cloudsmith repository by default (or a local mirror), plus EPEL, which provides `log4cplus` for the ISC packages. The role enables EPEL unless `kea_epel_manage: false`.
 
 ```bash
 ansible-galaxy collection install -r requirements.yml
