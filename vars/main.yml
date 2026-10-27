@@ -11,10 +11,10 @@ __kea_sources:
     ctrl_agent_package: isc-kea-ctrl-agent
     mysql_packages: [isc-kea-mysql]
     pgsql_packages: [isc-kea-pgsql]
-    dhcp4_service: isc-kea-dhcp4
-    dhcp6_service: isc-kea-dhcp6
-    ddns_service: isc-kea-dhcp-ddns
-    ctrl_agent_service: isc-kea-ctrl-agent
+    dhcp4_service: kea-dhcp4
+    dhcp6_service: kea-dhcp6
+    ddns_service: kea-dhcp-ddns
+    ctrl_agent_service: kea-ctrl-agent
     socket_dir: /var/run/kea
   distro:
     common_packages: [kea, kea-hooks]

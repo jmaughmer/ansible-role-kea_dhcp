@@ -29,7 +29,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        scenario: [default, ha]
+        include:
+          - { scenario: default, ansible: "ansible-core" }
+          - { scenario: ha, ansible: "ansible-core" }
+          # EL8's Python 3.6 dnf bindings need ansible-core 2.16.
+          - { scenario: el8, ansible: "ansible-core>=2.16,<2.17" }
     steps:
       - uses: actions/checkout@v4
         with:
@@ -38,7 +42,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install tools
-        run: pip install ansible-core molecule "molecule-plugins[docker]" docker
+        run: pip install "${{ matrix.ansible }}" molecule "molecule-plugins[docker]" docker
       - name: Install collections
         working-directory: ansible-role-kea_dhcp
         run: ansible-galaxy collection install -r requirements.yml

@@ -15,7 +15,7 @@ Features:
 
 ## Requirements
 
-- Ansible core 2.15 or newer.
+- Ansible core 2.15 or newer. RHEL 8 targets need ansible-core 2.16 or older on the controller, because 2.17+ no longer supports EL8's Python 3.6, which is where the dnf bindings live.
 - Collections from `requirements.yml`: `ansible.posix` and `community.general`.
 - Managed hosts need access to the package repositories: ISC's Cloudsmith repository by default (or a local mirror), plus EPEL, which provides `log4cplus` for the ISC packages. The role enables EPEL unless `kea_epel_manage: false`.
 
@@ -264,8 +264,9 @@ Tags: `kea_install`, `kea_tuning`, `kea_database`, `kea_config`, `kea_firewall`,
 ```bash
 pip install ansible-core molecule "molecule-plugins[docker]" ansible-lint yamllint
 yamllint . && ansible-lint
-molecule test             # DHCPv4/v6, DDNS, PXE, API, reservations, logging on EL8/9/10
+molecule test             # DHCPv4/v6, DDNS, PXE, API, reservations, logging on EL9/EL10
 molecule test -s ha       # two-node hot-standby cluster, failover and recovery
+molecule test -s el8      # same as default on EL8 (run with ansible-core 2.16)
 ```
 
 The scenarios use the `almalinux/<n>-init` images with systemd and need internet access to the ISC repository. GitHub Actions runs lint and both scenarios on every pull request.

@@ -14,7 +14,7 @@
       ansible.builtin.assert:
         that: ansible_facts.services[item ~ '.service'].state == 'running'
         fail_msg: "{{ item }} is not running"
-      loop: [isc-kea-dhcp4, isc-kea-dhcp6, isc-kea-dhcp-ddns, isc-kea-ctrl-agent]
+      loop: [kea-dhcp4, kea-dhcp6, kea-dhcp-ddns, kea-ctrl-agent]
 
     - name: Re-check configuration files
       ansible.builtin.command: "{{ item.bin }} -t /etc/kea/{{ item.conf }}"
@@ -133,6 +133,6 @@
 
     - name: Check the systemd tuning drop-in is applied
       ansible.builtin.systemd_service:
-        name: isc-kea-dhcp4
+        name: kea-dhcp4
       register: unit
       failed_when: unit.status.LimitNOFILE != '65536'
