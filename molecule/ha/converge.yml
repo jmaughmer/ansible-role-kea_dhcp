@@ -1,0 +1,7 @@
+---
+- name: Converge
+  hosts: kea_cluster
+  tasks:
+    - name: Include the role
+      ansible.builtin.include_role:
+        name: ansible-role-kea_dhcp

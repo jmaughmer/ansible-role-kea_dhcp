@@ -1,0 +1,48 @@
+---
+- name: Install the phpIPAM sync script
+  ansible.builtin.copy:
+    src: kea-phpipam-sync.py
+    dest: /usr/local/libexec/kea-phpipam-sync
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Write the phpIPAM sync configuration
+  ansible.builtin.copy:
+    content: "{{ __kea_phpipam_sync_config | to_nice_json(indent=2) }}\n"
+    dest: "{{ kea_config_dir }}/kea-phpipam-sync.json"
+    owner: root
+    group: "{{ __kea_group }}"
+    mode: "0640"
+  vars:
+    __kea_phpipam_sync_config:
+      phpipam_url: "{{ kea_phpipam_url }}"
+      phpipam_app_id: "{{ kea_phpipam_app_id }}"
+      phpipam_token: "{{ kea_phpipam_token }}"
+      phpipam_verify_tls: "{{ kea_phpipam_verify_tls | bool }}"
+      kea_api_url: "{{ kea_phpipam_api_url }}"
+      kea_api_user: "{{ kea_phpipam_api_user }}"
+      kea_api_password: "{{ kea_phpipam_api_password }}"
+      kea_api_verify_tls: "{{ kea_phpipam_verify_tls | bool }}"
+      delete_missing: "{{ kea_phpipam_delete_missing | bool }}"
+      subnet_map: "{{ kea_phpipam_subnet_map }}"
+  no_log: true
+
+- name: Install the phpIPAM sync units
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/systemd/system/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - kea-phpipam-sync.service
+    - kea-phpipam-sync.timer
+  notify: Restart kea-phpipam-sync timer
+
+- name: Enable the phpIPAM sync timer
+  ansible.builtin.systemd_service:
+    name: kea-phpipam-sync.timer
+    state: started
+    enabled: true
+    daemon_reload: true

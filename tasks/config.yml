@@ -1,0 +1,156 @@
+---
+- name: Create Kea directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner }}"
+    group: "{{ __kea_group }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: "{{ kea_config_dir }}", owner: root, mode: "0750" }
+    - { path: "{{ kea_lib_dir }}", owner: "{{ __kea_user }}", mode: "0750" }
+    - { path: "{{ kea_log_dir }}", owner: "{{ __kea_user }}", mode: "0750" }
+    - { path: "{{ kea_socket_dir }}", owner: "{{ __kea_user }}", mode: "0750" }
+  loop_control:
+    label: "{{ item.path }}"
+
+- name: Write API password files
+  ansible.builtin.copy:
+    content: "{{ item.password }}"
+    dest: "{{ kea_config_dir }}/kea-api-password-{{ item.user }}"
+    owner: root
+    group: "{{ __kea_group }}"
+    mode: "0640"
+  loop: "{{ kea_api_users }}"
+  loop_control:
+    label: "{{ item.user }}"
+  no_log: true
+  notify: Restart kea-ctrl-agent
+
+- name: Write the HA peer password file
+  ansible.builtin.copy:
+    content: "{{ kea_ha_basic_auth_password }}"
+    dest: "{{ kea_config_dir }}/kea-ha-password"
+    owner: root
+    group: "{{ __kea_group }}"
+    mode: "0640"
+  when:
+    - kea_ha_enabled | bool
+    - kea_ha_basic_auth_user | length > 0
+  no_log: true
+  notify:
+    - Restart kea-dhcp4
+    - Restart kea-dhcp6
+
+- name: Deploy API TLS material
+  when: kea_ctrl_agent_tls_enabled | bool
+  block:
+    - name: Create the TLS directory
+      ansible.builtin.file:
+        path: "{{ kea_ctrl_agent_tls_cert_file | dirname }}"
+        state: directory
+        owner: root
+        group: "{{ __kea_group }}"
+        mode: "0750"
+
+    - name: Write TLS files
+      ansible.builtin.copy:
+        content: "{{ item.content }}"
+        dest: "{{ item.dest }}"
+        owner: root
+        group: "{{ __kea_group }}"
+        mode: "{{ item.mode }}"
+      loop:
+        - { content: "{{ kea_ctrl_agent_tls_cert_content }}", dest: "{{ kea_ctrl_agent_tls_cert_file }}", mode: "0644" }
+        - { content: "{{ kea_ctrl_agent_tls_key_content }}", dest: "{{ kea_ctrl_agent_tls_key_file }}", mode: "0640" }
+        - { content: "{{ kea_ctrl_agent_tls_ca_content }}", dest: "{{ kea_ctrl_agent_tls_ca_file }}", mode: "0644" }
+      loop_control:
+        label: "{{ item.dest }}"
+      when: item.content | length > 0
+      no_log: true
+      notify:
+        - Restart kea-ctrl-agent
+        - Restart kea-dhcp4
+        - Restart kea-dhcp6
+
+- name: Configure Kerberos for GSS-TSIG
+  when:
+    - kea_ddns_enabled | bool
+    - kea_ddns_gss_tsig_enabled | bool
+  block:
+    - name: Deploy the DDNS keytab from base64
+      ansible.builtin.copy:
+        content: "{{ kea_ddns_gss_tsig_keytab_b64 | b64decode }}"
+        dest: "{{ kea_ddns_gss_tsig_keytab_path }}"
+        owner: root
+        group: "{{ __kea_group }}"
+        mode: "0640"
+      when: kea_ddns_gss_tsig_keytab_b64 | length > 0
+      no_log: true
+      notify: Restart kea-dhcp-ddns
+
+    - name: Deploy the DDNS keytab from a file
+      ansible.builtin.copy:
+        src: "{{ kea_ddns_gss_tsig_keytab_src }}"
+        dest: "{{ kea_ddns_gss_tsig_keytab_path }}"
+        owner: root
+        group: "{{ __kea_group }}"
+        mode: "0640"
+      when:
+        - kea_ddns_gss_tsig_keytab_b64 | length == 0
+        - kea_ddns_gss_tsig_keytab_src | length > 0
+      notify: Restart kea-dhcp-ddns
+
+    - name: Configure the Kerberos realm
+      ansible.builtin.template:
+        src: krb5-kea.conf.j2
+        dest: /etc/krb5.conf.d/kea.conf
+        owner: root
+        group: root
+        mode: "0644"
+      when: kea_krb5_manage | bool
+      notify: Restart kea-dhcp-ddns
+
+- name: Configure kea-dhcp4
+  ansible.builtin.template:
+    src: kea-dhcp4.conf.j2
+    dest: "{{ kea_config_dir }}/kea-dhcp4.conf"
+    owner: root
+    group: "{{ __kea_group }}"
+    mode: "0640"
+    validate: "{{ 'kea-dhcp4 -t %s' if kea_validate_config | bool else omit }}"
+  when: kea_dhcp4_enabled | bool
+  notify: Restart kea-dhcp4
+
+- name: Configure kea-dhcp6
+  ansible.builtin.template:
+    src: kea-dhcp6.conf.j2
+    dest: "{{ kea_config_dir }}/kea-dhcp6.conf"
+    owner: root
+    group: "{{ __kea_group }}"
+    mode: "0640"
+    validate: "{{ 'kea-dhcp6 -t %s' if kea_validate_config | bool else omit }}"
+  when: kea_dhcp6_enabled | bool
+  notify: Restart kea-dhcp6
+
+- name: Configure kea-dhcp-ddns
+  ansible.builtin.template:
+    src: kea-dhcp-ddns.conf.j2
+    dest: "{{ kea_config_dir }}/kea-dhcp-ddns.conf"
+    owner: root
+    group: "{{ __kea_group }}"
+    mode: "0640"
+    validate: "{{ 'kea-dhcp-ddns -t %s' if kea_validate_config | bool else omit }}"
+  when: kea_ddns_enabled | bool
+  notify: Restart kea-dhcp-ddns
+
+- name: Configure kea-ctrl-agent
+  ansible.builtin.template:
+    src: kea-ctrl-agent.conf.j2
+    dest: "{{ kea_config_dir }}/kea-ctrl-agent.conf"
+    owner: root
+    group: "{{ __kea_group }}"
+    mode: "0640"
+    validate: "{{ 'kea-ctrl-agent -t %s' if kea_validate_config | bool else omit }}"
+  when: kea_ctrl_agent_enabled | bool
+  notify: Restart kea-ctrl-agent

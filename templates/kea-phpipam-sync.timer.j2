@@ -1,0 +1,11 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Periodic phpIPAM to Kea reservation sync
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec={{ kea_phpipam_sync_interval }}
+RandomizedDelaySec=30s
+
+[Install]
+WantedBy=timers.target

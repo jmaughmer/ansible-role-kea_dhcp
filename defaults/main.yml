@@ -1,0 +1,457 @@
+---
+# =============================================================================
+# Installation
+# =============================================================================
+
+# Where packages come from:
+#   isc    - ISC's official Cloudsmith repositories (recommended; all hooks,
+#            including HA, host_cmds and GSS-TSIG, are open source from 3.0).
+#   distro - EPEL (EL8/EL9) or AppStream (EL10). Older Kea, fewer hooks.
+kea_install_source: isc
+
+# ISC repository series, e.g. "3-0" (LTS) or "3-2" (stable).
+kea_isc_repo_series: "3-0"
+# Manage the yum repository file. Set to false when packages come from a
+# local mirror / Satellite and the repository is already configured.
+kea_manage_repo: true
+kea_isc_repo_file_url: >-
+  https://dl.cloudsmith.io/public/isc/kea-{{ kea_isc_repo_series }}/config.rpm.txt?distro=el&codename={{ ansible_facts['distribution_major_version'] }}
+# EPEL is only used when kea_install_source == distro on EL8/EL9.
+kea_epel_manage: true
+
+# Package state: present or latest.
+kea_package_state: present
+# Extra packages to install alongside Kea (e.g. isc-kea-perfdhcp).
+kea_extra_packages: []
+
+# Which daemons to deploy.
+kea_dhcp4_enabled: true
+kea_dhcp6_enabled: false
+kea_ddns_enabled: false
+kea_ctrl_agent_enabled: true
+
+# Validate configuration files with "kea-<daemon> -t" before installing them.
+kea_validate_config: true
+
+# Kea runtime user/group. Auto-detected from the packages when left empty.
+kea_user: ""
+kea_group: ""
+
+# Directories (Kea >= 2.6.3 / 3.0.1 restrict files to these locations).
+kea_config_dir: /etc/kea
+kea_lib_dir: /var/lib/kea
+kea_log_dir: /var/log/kea
+# Defaults differ per package source (see vars/); override only if needed.
+kea_socket_dir: "{{ __kea_socket_dir }}"
+kea_hooks_dir: "{{ __kea_hooks_dir }}"
+
+# =============================================================================
+# Interfaces
+# =============================================================================
+kea_dhcp4_interfaces: ["*"]
+kea_dhcp6_interfaces: ["*"]
+# "raw" is required to serve directly connected clients. "udp" is faster and
+# is fine when every client is behind a relay (ip helper-address).
+kea_dhcp4_socket_type: raw
+kea_interfaces_service_sockets_max_retries: 5
+kea_interfaces_service_sockets_retry_wait_time: 5000
+
+# =============================================================================
+# Global DHCP parameters
+# =============================================================================
+kea_dhcp4_valid_lifetime: 4000
+kea_dhcp4_renew_timer: 1000
+kea_dhcp4_rebind_timer: 2000
+kea_dhcp4_authoritative: false
+kea_dhcp4_match_client_id: true
+
+kea_dhcp6_valid_lifetime: 4000
+kea_dhcp6_preferred_lifetime: 3000
+kea_dhcp6_renew_timer: 1000
+kea_dhcp6_rebind_timer: 2000
+# DUID type the server uses for itself (LLT, EN or LL). Pin it in HA setups.
+kea_dhcp6_server_id: {}
+
+# Global options, Kea "option-data" format.
+#   - { name: domain-name-servers, data: "192.0.2.53, 192.0.2.54" }
+kea_dhcp4_option_data: []
+kea_dhcp6_option_data: []
+# Custom option definitions, Kea "option-def" format.
+kea_dhcp4_option_def: []
+kea_dhcp6_option_def: []
+
+# Client classes, Kea "client-classes" format. PXE classes are appended
+# automatically when kea_pxe_enabled is true.
+kea_dhcp4_client_classes: []
+kea_dhcp6_client_classes: []
+
+# =============================================================================
+# Subnets and reservations (Kea native format, written as YAML)
+# =============================================================================
+# Every subnet must have a stable, unique "id" - reservations in a host
+# database, HA and lease files all reference it.
+#
+# kea_dhcp4_subnets:
+#   - id: 1
+#     subnet: 192.0.2.0/24
+#     pools: [{ pool: 192.0.2.100 - 192.0.2.200 }]
+#     option-data:
+#       - { name: routers, data: 192.0.2.1 }
+#     reservations:
+#       - hw-address: "aa:bb:cc:dd:ee:01"
+#         ip-address: 192.0.2.10
+#         hostname: printer01
+kea_dhcp4_subnets: []
+kea_dhcp4_shared_networks: []
+# Global (not subnet-scoped) reservations.
+kea_dhcp4_reservations: []
+
+# kea_dhcp6_subnets:
+#   - id: 1
+#     subnet: 2001:db8:1::/64
+#     interface: eth0
+#     pools: [{ pool: 2001:db8:1::1000 - 2001:db8:1::1fff }]
+#     pd-pools:
+#       - { prefix: "2001:db8:8::", prefix-len: 56, delegated-len: 64 }
+#     reservations:
+#       - duid: "01:02:03:04:05:0a:0b:0c:0d:0e"
+#         ip-addresses: ["2001:db8:1::10"]
+#       - hw-address: "aa:bb:cc:dd:ee:02"
+#         prefixes: ["2001:db8:8:100::/56"]
+kea_dhcp6_subnets: []
+kea_dhcp6_shared_networks: []
+kea_dhcp6_reservations: []
+
+# Which identifiers Kea checks for reservations, in order. Keeping this list
+# short is a significant performance win.
+kea_dhcp4_host_reservation_identifiers: [hw-address, client-id]
+kea_dhcp6_host_reservation_identifiers: [hw-address, duid]
+# Where reservations are looked up. Disable what you don't use (performance).
+kea_reservations_global: false
+kea_reservations_in_subnet: true
+kea_reservations_out_of_pool: false
+
+# =============================================================================
+# Lease and host databases
+# =============================================================================
+# Lease database (Kea "lease-database" format without the name for memfile).
+kea_dhcp4_lease_database:
+  type: memfile
+  persist: true
+  name: "{{ kea_lib_dir }}/kea-leases4.csv"
+  lfc-interval: 3600
+kea_dhcp6_lease_database:
+  type: memfile
+  persist: true
+  name: "{{ kea_lib_dir }}/kea-leases6.csv"
+  lfc-interval: 3600
+
+# Host reservation database. Required to add/remove reservations through the
+# API (host_cmds) from applications such as phpIPAM. Example:
+#   kea_hosts_database:
+#     type: mysql
+#     name: kea
+#     host: db.example.com
+#     port: 3306
+#     user: kea
+#     password: "{{ vault_kea_db_password }}"
+kea_hosts_database: {}
+kea_dhcp4_hosts_database: "{{ kea_hosts_database }}"
+kea_dhcp6_hosts_database: "{{ kea_hosts_database }}"
+
+# Initialise the schema of kea_hosts_database with kea-admin (run once, from
+# the first host of the play). The database and user must already exist.
+kea_db_init: false
+
+# =============================================================================
+# Performance tuning
+# =============================================================================
+kea_multi_threading_enabled: true
+# null = use ISC's recommended values for the configured lease backend
+# (see vars/main.yml). 0 thread-pool-size = number of CPU cores.
+kea_dhcp4_thread_pool_size: null
+kea_dhcp4_packet_queue_size: null
+kea_dhcp6_thread_pool_size: null
+kea_dhcp6_packet_queue_size: null
+
+# Lease caching lets Kea reuse a lease on renew without a backend write.
+kea_cache_threshold: 0.25
+# Calculate T1/T2 from the lifetime instead of fixed timers.
+kea_calculate_tee_times: false
+# Drop packets that wait too long for a parked hook (e.g. DDNS, HA).
+kea_parked_packet_limit: 256
+# Look up global reservations before subnet selection.
+kea_early_global_reservations_lookup: false
+
+# Kernel socket buffers and backlog. Applied with sysctl.
+kea_sysctl_manage: true
+kea_sysctl_settings:
+  net.core.rmem_max: 8388608
+  net.core.wmem_max: 8388608
+  net.core.rmem_default: 1048576
+  net.core.wmem_default: 1048576
+  net.core.netdev_max_backlog: 5000
+  net.ipv4.udp_rmem_min: 16384
+
+# systemd drop-in for every Kea unit.
+kea_systemd_override_manage: true
+kea_systemd_limit_nofile: 65536
+kea_systemd_restart: on-failure
+kea_systemd_restart_sec: 5
+kea_systemd_environment: {}
+
+# =============================================================================
+# Logging
+# =============================================================================
+# file | syslog | stdout | stderr
+kea_log_output: file
+kea_log_severity: INFO
+# 0-99, only used when severity is DEBUG.
+kea_log_debuglevel: 0
+kea_log_maxsize: 10485760
+kea_log_maxver: 8
+kea_log_flush: true
+# Leave empty to use Kea's default pattern (recommended for log shippers).
+kea_log_pattern: ""
+# Optional name for syslog output ("syslog:<name>"). Empty uses plain "syslog".
+kea_log_syslog_name: ""
+# Extra loggers per daemon, Kea "loggers" format, e.g. to raise the
+# packet logger to DEBUG:
+#   - name: kea-dhcp4.packets
+#     severity: DEBUG
+#     debuglevel: 55
+#     output-options: [{ output: /var/log/kea/kea-dhcp4-packets.log }]
+kea_dhcp4_extra_loggers: []
+kea_dhcp6_extra_loggers: []
+kea_ddns_extra_loggers: []
+kea_ctrl_agent_extra_loggers: []
+# Full override of the loggers list per daemon (Kea format). Leave empty.
+kea_dhcp4_loggers: []
+kea_dhcp6_loggers: []
+kea_ddns_loggers: []
+kea_ctrl_agent_loggers: []
+
+# Forensic (legal) lease logging hook.
+kea_legal_log_enabled: false
+kea_legal_log_path: "{{ kea_log_dir }}"
+kea_legal_log_base_name_v4: kea-legal4
+kea_legal_log_base_name_v6: kea-legal6
+# Parameters merged into the legal_log hook (e.g. time-unit, count, pattern).
+kea_legal_log_parameters: {}
+
+# =============================================================================
+# Control Agent / REST API
+# =============================================================================
+kea_ctrl_agent_host: 127.0.0.1
+kea_ctrl_agent_port: 8000
+# HTTP basic authentication. Strongly recommended whenever the API is
+# reachable from the network. Passwords are written to files in
+# kea_config_dir and never appear in the configuration.
+#   kea_api_users:
+#     - { user: admin, password: "{{ vault_kea_api_admin_password }}" }
+#     - { user: phpipam, password: "{{ vault_kea_api_phpipam_password }}" }
+kea_api_users: []
+kea_api_auth_realm: kea-api
+# Optional TLS for the API.
+kea_ctrl_agent_tls_enabled: false
+kea_ctrl_agent_tls_cert_file: "{{ kea_config_dir }}/tls/kea.crt"
+kea_ctrl_agent_tls_key_file: "{{ kea_config_dir }}/tls/kea.key"
+kea_ctrl_agent_tls_ca_file: "{{ kea_config_dir }}/tls/ca.crt"
+kea_ctrl_agent_tls_cert_required: false
+# Optional PEM content to deploy to the paths above (vault these).
+kea_ctrl_agent_tls_cert_content: ""
+kea_ctrl_agent_tls_key_content: ""
+kea_ctrl_agent_tls_ca_content: ""
+
+# Load the hooks that make up the management API.
+kea_hook_lease_cmds: true
+# host_cmds: reservation-add / reservation-del / reservation-get via the API.
+kea_hook_host_cmds: true
+kea_hook_stat_cmds: true
+# subnet_cmds: manage subnets at run time (requires config backend or
+# careful use of config-write; off by default).
+kea_hook_subnet_cmds: false
+
+# Raw extra hooks, Kea "hooks-libraries" format.
+kea_dhcp4_extra_hooks: []
+kea_dhcp6_extra_hooks: []
+kea_ddns_extra_hooks: []
+
+# =============================================================================
+# phpIPAM reservation sync (optional)
+# =============================================================================
+# Installs a small service that reads addresses with a MAC from phpIPAM and
+# pushes them to Kea as reservations through the API (host_cmds). Requires a
+# hosts database so reservations are shared by every server in a cluster.
+# Enable on one host only (e.g. the HA primary).
+kea_phpipam_sync_enabled: false
+kea_phpipam_url: https://phpipam.example.com
+kea_phpipam_app_id: kea
+kea_phpipam_token: ""
+kea_phpipam_verify_tls: true
+# Map phpIPAM subnet IDs to Kea subnet IDs.
+#   - { phpipam_subnet_id: 7, kea_subnet_id: 1, family: 4 }
+kea_phpipam_subnet_map: []
+kea_phpipam_api_url: "http://{{ kea_ctrl_agent_host }}:{{ kea_ctrl_agent_port }}/"
+kea_phpipam_api_user: "{{ (kea_api_users | first).user if kea_api_users | length > 0 else '' }}"
+kea_phpipam_api_password: "{{ (kea_api_users | first).password if kea_api_users | length > 0 else '' }}"
+# Remove Kea reservations in mapped subnets that no longer exist in phpIPAM.
+kea_phpipam_delete_missing: true
+# systemd OnCalendar / OnUnitActiveSec interval.
+kea_phpipam_sync_interval: 5min
+
+# =============================================================================
+# High availability
+# =============================================================================
+kea_ha_enabled: false
+# hot-standby | load-balancing | passive-backup
+kea_ha_mode: hot-standby
+kea_ha_this_server_name: "{{ inventory_hostname }}"
+# Every server in the cluster, identical on all nodes:
+#   kea_ha_peers:
+#     - { name: kea1, address: 192.0.2.2, role: primary }
+#     - { name: kea2, address: 192.0.2.3, role: standby }   # or secondary
+#     - { name: kea3, address: 192.0.2.4, role: backup }
+# "url" may be set explicitly instead of "address".
+kea_ha_peers: []
+kea_ha_heartbeat_delay: 10000
+kea_ha_max_response_delay: 60000
+kea_ha_max_ack_delay: 5000
+kea_ha_max_unacked_clients: 5
+kea_ha_max_rejected_lease_updates: 10
+kea_ha_sync_timeout: 60000
+kea_ha_sync_page_limit: 10000
+kea_ha_delayed_updates_limit: 0
+kea_ha_send_lease_updates: true
+kea_ha_sync_leases: true
+kea_ha_wait_backup_ack: false
+kea_ha_auto_failover: true
+# Use a dedicated HTTP listener in each DHCP daemon for HA traffic (needs
+# multi-threading; recommended). Otherwise peers talk via the Control Agent.
+kea_ha_dedicated_listener: "{{ kea_multi_threading_enabled }}"
+kea_ha_dhcp4_port: 8001
+kea_ha_dhcp6_port: 8002
+kea_ha_listener_threads: 0
+kea_ha_client_threads: 0
+# Basic auth used when talking to peers (matches one of their kea_api_users).
+kea_ha_basic_auth_user: ""
+kea_ha_basic_auth_password: ""
+# Extra parameters merged into each high-availability relationship.
+kea_ha_extra_parameters: {}
+
+# =============================================================================
+# PXE / network boot
+# =============================================================================
+kea_pxe_enabled: false
+# TFTP / HTTP server handing out boot files.
+kea_pxe_next_server: ""
+kea_pxe_server_hostname: ""
+# DHCPv4 architectures (option 93). Each entry becomes a client class.
+kea_pxe_v4_architectures:
+  - { name: PXE_BIOS, arch: "0x0000", boot_file: pxelinux.0 }
+  - { name: PXE_UEFI_IA32, arch: "0x0006", boot_file: bootia32.efi }
+  - { name: PXE_UEFI_X64, arch: "0x0007", boot_file: shimx64.efi }
+  - { name: PXE_UEFI_BC, arch: "0x0009", boot_file: shimx64.efi }
+  - { name: PXE_UEFI_ARM64, arch: "0x000b", boot_file: shimaa64.efi }
+# UEFI HTTP boot (arch 0x0010 x64 / 0x0013 arm64). Empty URL disables it.
+kea_pxe_http_boot_url_x64: ""
+kea_pxe_http_boot_url_arm64: ""
+# iPXE chainloading: clients identifying as iPXE (user class) get this
+# script instead of the firmware boot file. Empty disables it.
+kea_pxe_ipxe_script_url: ""
+# DHCPv6 network boot (option 61 -> option 59 bootfile-url).
+kea_pxe_v6_architectures: []
+#  - { name: PXE6_UEFI_X64, arch: "0x0007", url: "tftp://[2001:db8::10]/shimx64.efi" }
+#  - { name: PXE6_UEFI_HTTP, arch: "0x0010", url: "http://[2001:db8::10]/EFI/BOOT/BOOTX64.EFI" }
+
+# =============================================================================
+# Dynamic DNS (kea-dhcp-ddns / D2) - Microsoft DNS
+# =============================================================================
+kea_ddns_ip_address: 127.0.0.1
+kea_ddns_port: 53001
+kea_ddns_dns_server_timeout: 500
+kea_ddns_max_queue_size: 1024
+
+# DHCP-side behaviour. Defaults mirror Windows DHCP "Always dynamically
+# update DNS records": the server updates both A and PTR on behalf of
+# clients, so records in secure-only zones belong to the DHCP server's
+# account and can be cleaned up on lease expiry.
+kea_ddns_send_updates: true
+kea_ddns_override_client_update: true
+kea_ddns_override_no_update: true
+# never | always | when-present | when-not-present
+kea_ddns_replace_client_name: when-not-present
+kea_ddns_generated_prefix: dhcp
+kea_ddns_qualifying_suffix: ""
+kea_ddns_update_on_renew: false
+# check-with-dhcid (RFC 4703, Windows DNS supports DHCID records) |
+# no-check-with-dhcid | check-exists-with-dhcid | no-check-without-dhcid.
+# Use no-check-without-dhcid when taking over records created by Windows
+# DHCP or by clients themselves.
+kea_ddns_conflict_resolution_mode: check-with-dhcid
+kea_ddns_ttl_percent: null
+kea_hostname_char_set: "[^A-Za-z0-9.-]"
+kea_hostname_char_replacement: "-"
+
+# DNS servers (Windows domain controllers).
+#   kea_ddns_dns_servers:
+#     - { ip-address: 192.0.2.53 }
+#     - { ip-address: 192.0.2.54 }
+kea_ddns_dns_servers: []
+# Zones to update. dns-servers default to kea_ddns_dns_servers.
+#   kea_ddns_forward_domains:
+#     - { name: corp.example.com. }
+#   kea_ddns_reverse_domains:
+#     - { name: 2.0.192.in-addr.arpa. }
+#     - { name: 8.b.d.0.1.0.0.2.ip6.arpa. }
+kea_ddns_forward_domains: []
+kea_ddns_reverse_domains: []
+
+# Classic TSIG keys (BIND-style; Windows DNS does not support these).
+#   - { name: key1, algorithm: HMAC-SHA256, secret: "{{ vault_tsig }}" }
+kea_ddns_tsig_keys: []
+
+# GSS-TSIG (Kerberos) - required for Windows DNS zones that only allow
+# "Secure" dynamic updates. Needs an AD service account with a keytab.
+kea_ddns_gss_tsig_enabled: false
+# Principal of the DNS service on the DCs, e.g. DNS/dc1.corp.example.com@CORP.EXAMPLE.COM
+kea_ddns_gss_tsig_server_principal: ""
+# Principal of the Kea service account, e.g. kea-ddns@CORP.EXAMPLE.COM
+kea_ddns_gss_tsig_client_principal: ""
+kea_ddns_gss_tsig_keytab_path: "{{ kea_config_dir }}/kea-ddns.keytab"
+# Keytab as base64 (vault it) or a file on the controller.
+kea_ddns_gss_tsig_keytab_b64: ""
+kea_ddns_gss_tsig_keytab_src: ""
+kea_ddns_gss_tsig_credentials_cache: "FILE:{{ kea_lib_dir }}/kea-ddns.ccache"
+kea_ddns_gss_tsig_tkey_lifetime: 3600
+kea_ddns_gss_tsig_rekey_interval: 2700
+kea_ddns_gss_tsig_retry_interval: 120
+kea_ddns_gss_tsig_tkey_protocol: TCP
+# Fall back to unsigned updates when GSS-TSIG fails.
+kea_ddns_gss_tsig_fallback: false
+# Servers the hook negotiates with; defaults to kea_ddns_dns_servers.
+kea_ddns_gss_tsig_servers: []
+# Manage /etc/krb5.conf.d/kea.conf for the AD realm.
+kea_krb5_manage: false
+kea_krb5_realm: ""
+kea_krb5_kdcs: []
+
+# =============================================================================
+# Firewall and SELinux
+# =============================================================================
+kea_firewalld_manage: true
+kea_firewalld_zone: public
+# Open the API port in the firewall (HA via Control Agent / remote clients).
+kea_firewalld_open_api: "{{ kea_ctrl_agent_host not in ['127.0.0.1', '::1', 'localhost'] }}"
+# Label non-standard API / HA ports for SELinux (http_port_t).
+kea_selinux_manage: true
+
+# =============================================================================
+# Escape hatches
+# =============================================================================
+# Recursively merged into the generated Dhcp4 / Dhcp6 / DhcpDdns /
+# Control-agent objects, for anything this role does not model.
+kea_dhcp4_extra_config: {}
+kea_dhcp6_extra_config: {}
+kea_ddns_extra_config: {}
+kea_ctrl_agent_extra_config: {}

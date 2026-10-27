@@ -1,0 +1,54 @@
+---
+- name: Build the package list
+  ansible.builtin.set_fact:
+    __kea_packages: >-
+      {{
+        (__kea_source.common_packages
+         + ([__kea_source.dhcp4_package] if kea_dhcp4_enabled | bool else [])
+         + ([__kea_source.dhcp6_package] if kea_dhcp6_enabled | bool else [])
+         + ([__kea_source.ddns_package] if kea_ddns_enabled | bool else [])
+         + ([__kea_source.ctrl_agent_package] if kea_ctrl_agent_enabled | bool else [])
+         + (__kea_source.mysql_packages if __kea_db_types is contains('mysql') else [])
+         + (__kea_source.pgsql_packages if __kea_db_types is contains('postgresql') else [])
+         + (['krb5-workstation'] if kea_ddns_enabled | bool and kea_ddns_gss_tsig_enabled | bool else [])
+         + (['python3'] if kea_phpipam_sync_enabled | bool else [])
+         + kea_extra_packages) | unique
+      }}
+  vars:
+    __kea_db_types: >-
+      {{ [kea_dhcp4_lease_database, kea_dhcp6_lease_database,
+          kea_dhcp4_hosts_database, kea_dhcp6_hosts_database]
+         | map(attribute='type', default='') | list }}
+
+- name: Install Kea packages
+  ansible.builtin.dnf:
+    name: "{{ __kea_packages }}"
+    state: "{{ kea_package_state }}"
+  notify: Restart kea
+
+- name: Detect the installed Kea version
+  ansible.builtin.command: "{{ 'kea-dhcp4' if kea_dhcp4_enabled | bool else 'kea-dhcp6' }} -v"
+  register: __kea_version_cmd
+  changed_when: false
+  failed_when: __kea_version_cmd.rc != 0 and not ansible_check_mode
+  check_mode: false
+
+- name: Look up the Kea service account
+  ansible.builtin.command: getent passwd kea _kea
+  register: __kea_account
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Set Kea facts
+  ansible.builtin.set_fact:
+    __kea_version: "{{ __kea_version_cmd.stdout | trim | regex_search('^[0-9]+\\.[0-9]+\\.[0-9]+') | default('3.0.0', true) }}"
+    __kea_user: "{{ kea_user if kea_user | length > 0 else (__kea_account.stdout_lines | first | default('root:') | split(':') | first) }}"
+
+- name: Set the Kea group
+  ansible.builtin.set_fact:
+    __kea_group: "{{ kea_group if kea_group | length > 0 else __kea_user }}"
+
+- name: Show what was installed
+  ansible.builtin.debug:
+    msg: "Kea {{ __kea_version }} ({{ kea_install_source }}), running as {{ __kea_user }}:{{ __kea_group }}"

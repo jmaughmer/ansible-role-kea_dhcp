@@ -1,0 +1,138 @@
+---
+- name: Verify
+  hosts: all
+  gather_facts: false
+  vars:
+    api_url: http://127.0.0.1:8000/
+    api_user: admin
+    api_password: molecule-secret
+  tasks:
+    - name: Collect service state
+      ansible.builtin.service_facts:
+
+    - name: Assert Kea daemons are running
+      ansible.builtin.assert:
+        that: ansible_facts.services[item ~ '.service'].state == 'running'
+        fail_msg: "{{ item }} is not running"
+      loop: [isc-kea-dhcp4, isc-kea-dhcp6, isc-kea-dhcp-ddns, isc-kea-ctrl-agent]
+
+    - name: Re-check configuration files
+      ansible.builtin.command: "{{ item.bin }} -t /etc/kea/{{ item.conf }}"
+      loop:
+        - { bin: kea-dhcp4, conf: kea-dhcp4.conf }
+        - { bin: kea-dhcp6, conf: kea-dhcp6.conf }
+        - { bin: kea-dhcp-ddns, conf: kea-dhcp-ddns.conf }
+        - { bin: kea-ctrl-agent, conf: kea-ctrl-agent.conf }
+      changed_when: false
+
+    - name: API rejects requests without credentials
+      ansible.builtin.uri:
+        url: "{{ api_url }}"
+        method: POST
+        body_format: json
+        body: { command: status-get, service: [dhcp4] }
+        status_code: 401
+
+    - name: Query every daemon through the API
+      ansible.builtin.uri:
+        url: "{{ api_url }}"
+        method: POST
+        url_username: "{{ api_user }}"
+        url_password: "{{ api_password }}"
+        force_basic_auth: true
+        body_format: json
+        body: { command: status-get, service: ["{{ item }}"] }
+      register: status
+      failed_when: status.json[0].result != 0
+      loop: [dhcp4, dhcp6, d2]
+
+    - name: Fetch the running DHCPv4 configuration
+      ansible.builtin.uri:
+        url: "{{ api_url }}"
+        method: POST
+        url_username: "{{ api_user }}"
+        url_password: "{{ api_password }}"
+        force_basic_auth: true
+        body_format: json
+        body: { command: config-get, service: [dhcp4] }
+      register: config4
+
+    - name: Assert PXE classes, DDNS and hooks are active
+      ansible.builtin.assert:
+        that:
+          - "'PXE_UEFI_X64' in classes"
+          - "'PXE_IPXE' in classes"
+          - "'PXE_HTTP_X64' in classes"
+          - dhcp4['dhcp-ddns']['enable-updates']
+          - dhcp4['multi-threading']['enable-multi-threading']
+          - hooks | select('search', 'libdhcp_host_cmds.so') | list | length == 1
+          - hooks | select('search', 'libdhcp_legal_log.so') | list | length == 1
+      vars:
+        dhcp4: "{{ config4.json[0].arguments.Dhcp4 }}"
+        classes: "{{ dhcp4['client-classes'] | map(attribute='name') | list }}"
+        hooks: "{{ dhcp4['hooks-libraries'] | map(attribute='library') | list }}"
+
+    - name: Look up a DHCPv4 reservation through host_cmds
+      ansible.builtin.uri:
+        url: "{{ api_url }}"
+        method: POST
+        url_username: "{{ api_user }}"
+        url_password: "{{ api_password }}"
+        force_basic_auth: true
+        body_format: json
+        body:
+          command: reservation-get
+          service: [dhcp4]
+          arguments: { subnet-id: 1, identifier-type: hw-address, identifier: "aa:bb:cc:dd:ee:01" }
+      register: res4
+      failed_when: res4.json[0].result != 0 or res4.json[0].arguments['ip-address'] != '192.0.2.10'
+
+    - name: Look up a DHCPv6 reservation through host_cmds
+      ansible.builtin.uri:
+        url: "{{ api_url }}"
+        method: POST
+        url_username: "{{ api_user }}"
+        url_password: "{{ api_password }}"
+        force_basic_auth: true
+        body_format: json
+        body:
+          command: reservation-get
+          service: [dhcp6]
+          arguments: { subnet-id: 1, identifier-type: duid, identifier: "01:02:03:04:05:0a:0b:0c:0d:0e" }
+      register: res6
+      failed_when: res6.json[0].result != 0 or '2001:db8:1::10' not in res6.json[0].arguments['ip-addresses']
+
+    - name: Add and fetch a lease through lease_cmds
+      ansible.builtin.uri:
+        url: "{{ api_url }}"
+        method: POST
+        url_username: "{{ api_user }}"
+        url_password: "{{ api_password }}"
+        force_basic_auth: true
+        body_format: json
+        body:
+          command: "{{ item.command }}"
+          service: [dhcp4]
+          arguments: "{{ item.arguments }}"
+      register: lease
+      # lease4-del answers 3 (empty) when there was nothing to delete.
+      failed_when: lease.json[0].result not in ([0, 3] if item.command == 'lease4-del' else [0])
+      loop:
+        - { command: lease4-del, arguments: { ip-address: 192.0.2.150 } }
+        - { command: lease4-add, arguments: { ip-address: 192.0.2.150, hw-address: "aa:bb:cc:dd:ee:99" } }
+        - { command: lease4-get, arguments: { ip-address: 192.0.2.150 } }
+      loop_control:
+        label: "{{ item.command }}"
+
+    - name: Check log files are written
+      ansible.builtin.stat:
+        path: "/var/log/kea/{{ item }}"
+      register: logs
+      failed_when: not logs.stat.exists
+      loop: [kea-dhcp4.log, kea-dhcp6.log, kea-dhcp-ddns.log, kea-ctrl-agent.log]
+
+    - name: Check the systemd tuning drop-in is applied
+      ansible.builtin.systemd_service:
+        name: isc-kea-dhcp4
+      register: unit
+      failed_when: unit.status.LimitNOFILE != '65536'

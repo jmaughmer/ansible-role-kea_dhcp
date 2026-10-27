@@ -1,0 +1,51 @@
+---
+- name: Converge
+  hosts: all
+  vars:
+    kea_dhcp6_enabled: true
+    kea_ddns_enabled: true
+    kea_extra_packages: [isc-kea-perfdhcp]
+    kea_api_users:
+      - { user: admin, password: molecule-secret }
+    kea_dhcp4_option_data:
+      - { name: domain-name-servers, data: "192.0.2.53, 192.0.2.54" }
+      - { name: domain-name, data: corp.example.com }
+    kea_dhcp4_subnets:
+      - id: 1
+        subnet: 192.0.2.0/24
+        pools: [{ pool: 192.0.2.100 - 192.0.2.200 }]
+        option-data:
+          - { name: routers, data: 192.0.2.1 }
+        reservations:
+          - hw-address: "aa:bb:cc:dd:ee:01"
+            ip-address: 192.0.2.10
+            hostname: printer01
+    kea_dhcp6_subnets:
+      - id: 1
+        subnet: "2001:db8:1::/64"
+        pools: [{ pool: "2001:db8:1::1000 - 2001:db8:1::1fff" }]
+        pd-pools:
+          - { prefix: "2001:db8:8::", prefix-len: 56, delegated-len: 64 }
+        reservations:
+          - duid: "01:02:03:04:05:0a:0b:0c:0d:0e"
+            ip-addresses: ["2001:db8:1::10"]
+            hostname: server01
+    kea_pxe_enabled: true
+    kea_pxe_next_server: 192.0.2.10
+    kea_pxe_ipxe_script_url: http://192.0.2.10/boot.ipxe
+    kea_pxe_http_boot_url_x64: http://192.0.2.10/EFI/BOOT/BOOTX64.EFI
+    kea_pxe_v6_architectures:
+      - { name: PXE6_UEFI_X64, arch: "0x0007", url: "tftp://[2001:db8:1::10]/shimx64.efi" }
+    kea_ddns_qualifying_suffix: corp.example.com.
+    kea_ddns_dns_servers: [{ ip-address: 127.0.0.1 }]
+    kea_ddns_forward_domains: [{ name: corp.example.com. }]
+    kea_ddns_reverse_domains: [{ name: 2.0.192.in-addr.arpa. }]
+    kea_legal_log_enabled: true
+    kea_dhcp4_extra_loggers:
+      - name: kea-dhcp4.leases
+        severity: INFO
+        output-options: [{ output: /var/log/kea/kea-dhcp4-leases.log }]
+  tasks:
+    - name: Include the role
+      ansible.builtin.include_role:
+        name: ansible-role-kea_dhcp

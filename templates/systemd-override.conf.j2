@@ -1,0 +1,17 @@
+# {{ ansible_managed }}
+[Unit]
+{% if kea_ha_enabled | bool and item in [__kea_source.dhcp4_service, __kea_source.dhcp6_service] %}
+Wants=network-online.target
+After=network-online.target
+{% endif %}
+
+[Service]
+LimitNOFILE={{ kea_systemd_limit_nofile }}
+Restart={{ kea_systemd_restart }}
+RestartSec={{ kea_systemd_restart_sec }}
+RuntimeDirectory={{ kea_socket_dir | basename }}
+RuntimeDirectoryPreserve=yes
+RuntimeDirectoryMode=0750
+{% for key, value in kea_systemd_environment.items() %}
+Environment="{{ key }}={{ value }}"
+{% endfor %}

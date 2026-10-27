@@ -1,0 +1,87 @@
+---
+__kea_supported_major_versions: ["8", "9", "10"]
+
+# Package and unit names per install source.
+__kea_sources:
+  isc:
+    common_packages: [isc-kea-common, isc-kea-hooks, isc-kea-admin]
+    dhcp4_package: isc-kea-dhcp4
+    dhcp6_package: isc-kea-dhcp6
+    ddns_package: isc-kea-dhcp-ddns
+    ctrl_agent_package: isc-kea-ctrl-agent
+    mysql_packages: [isc-kea-mysql]
+    pgsql_packages: [isc-kea-pgsql]
+    dhcp4_service: isc-kea-dhcp4
+    dhcp6_service: isc-kea-dhcp6
+    ddns_service: isc-kea-dhcp-ddns
+    ctrl_agent_service: isc-kea-ctrl-agent
+    socket_dir: /var/run/kea
+  distro:
+    common_packages: [kea, kea-hooks]
+    dhcp4_package: kea
+    dhcp6_package: kea
+    ddns_package: kea
+    ctrl_agent_package: kea
+    mysql_packages: []
+    pgsql_packages: []
+    dhcp4_service: kea-dhcp4
+    dhcp6_service: kea-dhcp6
+    ddns_service: kea-dhcp-ddns
+    ctrl_agent_service: kea-ctrl-agent
+    socket_dir: /run/kea
+
+__kea_source: "{{ __kea_sources[kea_install_source] }}"
+__kea_socket_dir: "{{ __kea_source.socket_dir }}"
+__kea_hooks_dir: /usr/lib64/kea/hooks
+
+__kea_dhcp4_socket: "{{ kea_socket_dir }}/kea4-ctrl-socket"
+__kea_dhcp6_socket: "{{ kea_socket_dir }}/kea6-ctrl-socket"
+__kea_ddns_socket: "{{ kea_socket_dir }}/kea-ddns-ctrl-socket"
+
+# ISC's recommended multi-threading settings per lease backend (Kea ARM,
+# "Multi-Threading Settings With Different Database Backends").
+__kea_mt_recommended:
+  dhcp4:
+    memfile: { thread-pool-size: 4, packet-queue-size: 28 }
+    mysql: { thread-pool-size: 12, packet-queue-size: 792 }
+    postgresql: { thread-pool-size: 8, packet-queue-size: 88 }
+  dhcp6:
+    memfile: { thread-pool-size: 4, packet-queue-size: 160 }
+    mysql: { thread-pool-size: 6, packet-queue-size: 336 }
+    postgresql: { thread-pool-size: 6, packet-queue-size: 48 }
+
+# Hook library file names.
+__kea_hook_files:
+  lease_cmds: libdhcp_lease_cmds.so
+  host_cmds: libdhcp_host_cmds.so
+  stat_cmds: libdhcp_stat_cmds.so
+  subnet_cmds: libdhcp_subnet_cmds.so
+  ha: libdhcp_ha.so
+  legal_log: libdhcp_legal_log.so
+  mysql: libdhcp_mysql.so
+  pgsql: libdhcp_pgsql.so
+  gss_tsig: libddns_gss_tsig.so
+
+__kea_enabled_services: >-
+  {{ ([__kea_source.dhcp4_service] if kea_dhcp4_enabled | bool else [])
+     + ([__kea_source.dhcp6_service] if kea_dhcp6_enabled | bool else [])
+     + ([__kea_source.ddns_service] if kea_ddns_enabled | bool else [])
+     + ([__kea_source.ctrl_agent_service] if kea_ctrl_agent_enabled | bool else []) }}
+
+__kea_db_backend_args:
+  mysql: mysql
+  postgresql: pgsql
+
+# TCP ports that must be reachable from other hosts.
+__kea_tcp_ports: >-
+  {{ (([kea_ctrl_agent_port | string] if kea_ctrl_agent_enabled | bool and kea_firewalld_open_api | bool else [])
+      + ([kea_ha_dhcp4_port | string] if kea_ha_enabled | bool and kea_ha_dedicated_listener | bool and kea_dhcp4_enabled | bool else [])
+      + ([kea_ha_dhcp6_port | string] if kea_ha_enabled | bool and kea_ha_dedicated_listener | bool and kea_dhcp6_enabled | bool else [])
+      + ([kea_ctrl_agent_port | string] if kea_ha_enabled | bool and not (kea_ha_dedicated_listener | bool) else []))
+     | unique }}
+
+__kea_all_services:
+  - "{{ __kea_source.dhcp4_service }}"
+  - "{{ __kea_source.dhcp6_service }}"
+  - "{{ __kea_source.ddns_service }}"
+  - "{{ __kea_source.ctrl_agent_service }}"

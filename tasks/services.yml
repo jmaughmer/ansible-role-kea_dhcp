@@ -1,0 +1,18 @@
+---
+- name: Flush handlers so new configuration is active
+  ansible.builtin.meta: flush_handlers
+
+- name: Enable and start Kea services
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    state: started
+    enabled: true
+  loop: "{{ __kea_enabled_services }}"
+
+- name: Disable Kea services that are not wanted
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    state: stopped
+    enabled: false
+  loop: "{{ __kea_all_services | difference(__kea_enabled_services) | unique }}"
+  when: (ansible_facts.services | default({}))[item ~ '.service'] is defined
