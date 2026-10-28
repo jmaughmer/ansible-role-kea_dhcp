@@ -18,13 +18,15 @@ log() { printf '\n\033[1;34m==> %s\033[0m\n' "$*"; }
 die() { printf '\033[1;31mERROR: %s\033[0m\n' "$*" >&2; exit 1; }
 
 check_host() {
+  local wsl=false user problems=()
+  user="$(id -un)"
   if [[ -r /etc/os-release ]]; then
     # shellcheck disable=SC1091
     . /etc/os-release
     [[ "${ID:-}" == "almalinux" && "${VERSION_ID%%.*}" == "10" ]] ||
       echo "Note: written for AlmaLinux 10 (WSL); this is ${PRETTY_NAME:-unknown}."
   fi
-  grep -qi microsoft /proc/version 2>/dev/null && echo "Running under WSL."
+  grep -qi microsoft /proc/version 2>/dev/null && { wsl=true; echo "Running under WSL."; }
 
   local missing=()
   for cmd in podman python3 git; do command -v "$cmd" >/dev/null || missing+=("$cmd"); done
@@ -32,6 +34,31 @@ check_host() {
     log "Installing ${missing[*]}"
     local sudo=""; ((EUID == 0)) || sudo="sudo"
     $sudo dnf install -y podman python3 python3-pip git
+  fi
+
+  # Rootless podman can only boot the systemd test containers with systemd
+  # on the host, cgroup v2, subordinate IDs and a user session. Rootful
+  # podman (sudo) needs none of these.
+  if ((EUID != 0)); then
+    if [[ "$(cat /proc/1/comm 2>/dev/null)" != systemd ]]; then
+      if $wsl; then
+        problems+=("systemd is not running. Put '[boot]' and 'systemd=true' in /etc/wsl.conf, run 'wsl --shutdown' in Windows, then reopen the distro.")
+      else
+        problems+=("systemd is not PID 1 on this host.")
+      fi
+    fi
+    [[ -f /sys/fs/cgroup/cgroup.controllers ]] ||
+      problems+=("cgroup v2 is not mounted. Under WSL add 'kernelCommandLine = cgroup_no_v1=all' to the [wsl2] section of %UserProfile%\\.wslconfig, then run 'wsl --shutdown'.")
+    if ! grep -q "^${user}:" /etc/subuid 2>/dev/null || ! grep -q "^${user}:" /etc/subgid 2>/dev/null; then
+      problems+=("$user has no subordinate IDs. Run 'sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 $user && podman system migrate'.")
+    fi
+    [[ -d "/run/user/$EUID" ]] ||
+      problems+=("there is no systemd user session for $user. Run 'sudo loginctl enable-linger $user', then open a new shell.")
+  fi
+  if ((${#problems[@]})); then
+    printf '\033[1;31mThis host cannot run the test containers yet:\033[0m\n' >&2
+    printf '  - %s\n' "${problems[@]}" >&2
+    die "fix the above, or run the script with sudo to use rootful podman."
   fi
   podman info >/dev/null 2>&1 || die "podman is not working: run 'podman info' to see why."
 }
