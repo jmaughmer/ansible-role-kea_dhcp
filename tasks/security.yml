@@ -1,0 +1,138 @@
+---
+# ---------------------------------------------------------------------------
+# FIPS
+# ---------------------------------------------------------------------------
+- name: Read the system crypto policy
+  ansible.builtin.command: update-crypto-policies --show
+  register: __kea_crypto_policy
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Set the system crypto policy
+  ansible.builtin.command: "update-crypto-policies --set {{ kea_crypto_policy }}"
+  when:
+    - kea_crypto_policy | length > 0
+    - (__kea_crypto_policy.stdout | default('') | trim) != kea_crypto_policy
+  changed_when: true
+  notify:
+    - Restart kea
+    - Warn about crypto policy reboot
+
+- name: Warn when GSS-TSIG may not work with Active Directory under FIPS
+  ansible.builtin.debug:
+    msg: >-
+      This host is in FIPS mode with crypto policy
+      "{{ __kea_crypto_policy.stdout | default('unknown') | trim }}". Active Directory
+      Kerberos only offers AES-SHA1 enctypes, which RHEL 9 and later FIPS policies reject.
+      Set kea_crypto_policy to "FIPS:AD-SUPPORT" if GSS-TSIG fails to get a ticket.
+  when:
+    - kea_ddns_enabled | bool
+    - kea_ddns_gss_tsig_enabled | bool
+    - ansible_facts['fips'] | default(false) | bool
+    - ansible_facts['distribution_major_version'] | int >= 9
+    - "'AD-SUPPORT' not in (kea_crypto_policy if kea_crypto_policy | length > 0 else __kea_crypto_policy.stdout | default(''))"
+
+# ---------------------------------------------------------------------------
+# SELinux
+# ---------------------------------------------------------------------------
+- name: Configure SELinux for Kea
+  when:
+    - kea_selinux_manage | bool
+    - ansible_facts['selinux']['status'] | default('disabled') == 'enabled'
+  block:
+    - name: Install SELinux management tools
+      ansible.builtin.dnf:
+        name:
+          - policycoreutils-python-utils
+          - python3-libselinux
+          - python3-policycoreutils
+        state: present
+
+    - name: List SELinux port types
+      ansible.builtin.command: semanage port -l
+      register: __kea_semanage_ports
+      changed_when: false
+      check_mode: false
+
+    - name: List local SELinux customisations
+      ansible.builtin.command: "{{ item }}"
+      loop:
+        - semanage fcontext -l -C
+        - semanage permissive -l
+      register: __kea_semanage_local
+      changed_when: false
+      check_mode: false
+
+    - name: Pick the SELinux port type for the API and HA listeners
+      ansible.builtin.set_fact:
+        __kea_selinux_port_type: >-
+          {{ kea_selinux_port_type if kea_selinux_port_type | length > 0 else
+             (__kea_semanage_ports.stdout_lines | map('split') | select | map('first')
+              | select('match', '^kea.*_port_t$') | first | default('http_port_t')) }}
+
+    - name: Label the API and HA listener ports
+      community.general.seport:
+        ports: "{{ __kea_selinux_ports | join(',') }}"
+        proto: tcp
+        setype: "{{ __kea_selinux_port_type }}"
+        state: present
+      when: __kea_selinux_ports | length > 0
+      notify: Restart kea
+
+    - name: Add file context equivalence for relocated Kea directories
+      ansible.builtin.command: "semanage fcontext -a -e {{ item.default }} {{ item.path }}"
+      loop:
+        - { default: /etc/kea, path: "{{ kea_config_dir }}" }
+        - { default: /var/lib/kea, path: "{{ kea_lib_dir }}" }
+        - { default: /var/log/kea, path: "{{ kea_log_dir }}" }
+      loop_control:
+        label: "{{ item.path }}"
+      when:
+        - item.path != item.default
+        - item.path not in __kea_semanage_local.results[0].stdout
+      changed_when: true
+      notify: Restart kea
+
+    - name: Label the GSS-TSIG keytab
+      community.general.sefcontext:
+        target: "{{ kea_ddns_gss_tsig_keytab_path }}"
+        setype: krb5_keytab_t
+        state: present
+      when:
+        - kea_ddns_enabled | bool
+        - kea_ddns_gss_tsig_enabled | bool
+
+    - name: Add custom file contexts
+      community.general.sefcontext:
+        target: "{{ item.target }}"
+        setype: "{{ item.setype }}"
+        ftype: "{{ item.ftype | default('a') }}"
+        state: "{{ item.state | default('present') }}"
+      loop: "{{ kea_selinux_fcontexts }}"
+      loop_control:
+        label: "{{ item.target }}"
+
+    - name: Restore file contexts on Kea paths
+      ansible.builtin.command: >-
+        restorecon -R -v {{ __kea_selinux_paths | join(' ') }}
+      register: __kea_restorecon
+      changed_when: __kea_restorecon.stdout | length > 0
+      when: kea_selinux_restore_contexts | bool
+      vars:
+        __kea_selinux_paths: "{{ [kea_config_dir, kea_lib_dir, kea_log_dir] | unique }}"
+
+    - name: Set SELinux booleans
+      ansible.posix.seboolean:
+        name: "{{ item.key }}"
+        state: "{{ item.value | bool }}"
+        persistent: true
+      loop: "{{ kea_selinux_booleans | dict2items }}"
+
+    - name: Set the Kea domain permissive state
+      ansible.builtin.command: >-
+        semanage permissive {{ '-a' if kea_selinux_permissive_domain | bool else '-d' }} {{ kea_selinux_domain }}
+      changed_when: true
+      when: >-
+        (kea_selinux_permissive_domain | bool) !=
+        (kea_selinux_domain in __kea_semanage_local.results[1].stdout.split())

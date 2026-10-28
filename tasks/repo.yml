@@ -1,0 +1,40 @@
+---
+- name: Configure the ISC Kea repository
+  when:
+    - kea_install_source == 'isc'
+    - kea_manage_repo | bool
+  block:
+    - name: Install the ISC Kea repository definition
+      ansible.builtin.get_url:
+        url: "{{ kea_isc_repo_file_url }}"
+        dest: "/etc/yum.repos.d/isc-kea-{{ kea_isc_repo_series }}.repo"
+        owner: root
+        group: root
+        mode: "0644"
+        force: false
+      register: __kea_repo_file
+
+    - name: Import the ISC repository signing keys  # noqa: no-handler
+      ansible.builtin.command: >-
+        dnf -q makecache -y --disablerepo='*'
+        --enablerepo='isc-kea-{{ kea_isc_repo_series }}*'
+      when: __kea_repo_file is changed
+      changed_when: true
+
+# ISC packages link against log4cplus, which only EPEL ships; distro Kea on
+# EL8/EL9 comes from EPEL itself.
+- name: Enable EPEL
+  when: kea_epel_manage | bool
+  block:
+    - name: Install epel-release
+      ansible.builtin.dnf:
+        name: "https://dl.fedoraproject.org/pub/epel/epel-release-latest-{{ ansible_facts['distribution_major_version'] }}.noarch.rpm"
+        state: present
+        disable_gpg_check: true
+      when: ansible_facts['distribution'] == 'RedHat'
+
+    - name: Install epel-release from extras
+      ansible.builtin.dnf:
+        name: epel-release
+        state: present
+      when: ansible_facts['distribution'] != 'RedHat'

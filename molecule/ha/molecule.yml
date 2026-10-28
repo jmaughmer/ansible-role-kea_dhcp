@@ -1,0 +1,47 @@
+---
+# Collections are installed by scripts/test.sh, pinned per ansible-core.
+dependency:
+  name: galaxy
+  enabled: false
+driver:
+  name: podman
+platforms:
+  - name: kea1
+    image: docker.io/almalinux/9-init
+    pre_build_image: true
+    command: /sbin/init
+    systemd: always
+    privileged: true
+    rootless: true
+    network: kea-ha
+    groups: [kea_cluster]
+  - name: kea2
+    image: docker.io/almalinux/9-init
+    pre_build_image: true
+    command: /sbin/init
+    systemd: always
+    privileged: true
+    rootless: true
+    network: kea-ha
+    groups: [kea_cluster]
+provisioner:
+  name: ansible
+  env:
+    ANSIBLE_ROLES_PATH: "${MOLECULE_PROJECT_DIRECTORY}/.."
+  inventory:
+    group_vars:
+      kea_cluster:
+        kea_sysctl_manage: false
+        kea_ha_enabled: true
+        kea_ha_mode: hot-standby
+        # kea_ha_peers and the subnet come from the addresses podman assigns;
+        # see converge.yml.
+        # Fast timers so the failover test finishes quickly.
+        kea_ha_heartbeat_delay: 2000
+        kea_ha_max_response_delay: 6000
+        kea_ha_max_unacked_clients: 0
+        kea_api_users:
+          - { user: admin, password: molecule-secret }
+        kea_dhcp4_interfaces: [eth0]
+verifier:
+  name: ansible

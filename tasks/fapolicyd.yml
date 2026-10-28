@@ -1,0 +1,50 @@
+---
+# fapolicyd trusts files installed by RPM. Anything else the role deploys
+# (the phpIPAM sync script, custom hooks) goes into a trust.d file holding
+# each file's path, size and SHA-256, so updates to those files are picked up.
+- name: Check for fapolicyd
+  ansible.builtin.stat:
+    path: /usr/sbin/fapolicyd
+  register: __kea_fapolicyd_bin
+
+- name: Trust Kea files in fapolicyd
+  when: __kea_fapolicyd_bin.stat.exists
+  block:
+    - name: Collect checksums of files to trust
+      ansible.builtin.stat:
+        path: "{{ item }}"
+        checksum_algorithm: sha256
+        get_checksum: true
+      loop: "{{ __kea_fapolicyd_files }}"
+      register: __kea_fapolicyd_stats
+
+    - name: Assert files to trust exist
+      ansible.builtin.assert:
+        that: item.stat.exists
+        fail_msg: "{{ item.item }} is listed for fapolicyd trust but does not exist."
+        quiet: true
+      loop: "{{ __kea_fapolicyd_stats.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+      when: not ansible_check_mode
+
+    - name: Write the fapolicyd trust file
+      ansible.builtin.copy:
+        dest: "/etc/fapolicyd/trust.d/{{ kea_fapolicyd_trust_file }}"
+        content: |
+          # Managed by Ansible (ansible-role-kea_dhcp)
+          {% for f in __kea_fapolicyd_stats.results if f.stat.exists | default(false) %}
+          {{ f.item }} {{ f.stat.size }} {{ f.stat.checksum }}
+          {% endfor %}
+        owner: root
+        group: fapolicyd
+        mode: "0644"
+      when: __kea_fapolicyd_files | length > 0
+      notify: Update fapolicyd trust
+
+    - name: Remove the fapolicyd trust file when nothing needs trusting
+      ansible.builtin.file:
+        path: "/etc/fapolicyd/trust.d/{{ kea_fapolicyd_trust_file }}"
+        state: absent
+      when: __kea_fapolicyd_files | length == 0
+      notify: Update fapolicyd trust

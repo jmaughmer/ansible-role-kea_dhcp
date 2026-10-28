@@ -1,0 +1,27 @@
+---
+- name: Gather service facts
+  ansible.builtin.service_facts:
+
+- name: Open firewalld for Kea
+  when:
+    - kea_firewalld_manage | bool
+    - ansible_facts.services['firewalld.service'] is defined
+    - ansible_facts.services['firewalld.service'].state == 'running'
+  block:
+    - name: Allow DHCP services
+      ansible.posix.firewalld:
+        service: "{{ item }}"
+        zone: "{{ kea_firewalld_zone }}"
+        permanent: true
+        immediate: true
+        state: enabled
+      loop: "{{ (['dhcp'] if kea_dhcp4_enabled | bool else []) + (['dhcpv6'] if kea_dhcp6_enabled | bool else []) }}"
+
+    - name: Allow API and HA ports
+      ansible.posix.firewalld:
+        port: "{{ item }}/tcp"
+        zone: "{{ kea_firewalld_zone }}"
+        permanent: true
+        immediate: true
+        state: enabled
+      loop: "{{ __kea_tcp_ports }}"

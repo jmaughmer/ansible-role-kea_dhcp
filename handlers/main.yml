@@ -1,0 +1,48 @@
+---
+- name: Reload systemd
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+
+- name: Update fapolicyd trust
+  ansible.builtin.command: fapolicyd-cli --update
+  changed_when: true
+  # fapolicyd reads trust.d on start, so there is nothing to do while stopped.
+  failed_when: false
+
+- name: Warn about crypto policy reboot
+  ansible.builtin.debug:
+    msg: The system crypto policy changed. Reboot so every process picks it up.
+
+- name: Restart kea-dhcp4
+  ansible.builtin.systemd_service:
+    name: "{{ __kea_source.dhcp4_service }}"
+    state: restarted
+  when: kea_dhcp4_enabled | bool
+  listen: Restart kea
+
+- name: Restart kea-dhcp6
+  ansible.builtin.systemd_service:
+    name: "{{ __kea_source.dhcp6_service }}"
+    state: restarted
+  when: kea_dhcp6_enabled | bool
+  listen: Restart kea
+
+- name: Restart kea-dhcp-ddns
+  ansible.builtin.systemd_service:
+    name: "{{ __kea_source.ddns_service }}"
+    state: restarted
+  when: kea_ddns_enabled | bool
+  listen: Restart kea
+
+- name: Restart kea-ctrl-agent
+  ansible.builtin.systemd_service:
+    name: "{{ __kea_source.ctrl_agent_service }}"
+    state: restarted
+  when: kea_ctrl_agent_enabled | bool
+  listen: Restart kea
+
+- name: Restart kea-phpipam-sync timer
+  ansible.builtin.systemd_service:
+    name: kea-phpipam-sync.timer
+    state: restarted
+    daemon_reload: true

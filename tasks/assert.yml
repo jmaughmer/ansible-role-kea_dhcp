@@ -1,0 +1,122 @@
+---
+- name: Assert supported platform
+  ansible.builtin.assert:
+    that:
+      - ansible_facts['os_family'] == 'RedHat'
+      - ansible_facts['distribution_major_version'] in __kea_supported_major_versions
+    fail_msg: >-
+      This role supports RHEL-compatible systems 8, 9 and 10, not
+      {{ ansible_facts['distribution'] }} {{ ansible_facts['distribution_version'] }}.
+    quiet: true
+
+- name: Assert install source
+  ansible.builtin.assert:
+    that: kea_install_source in __kea_sources
+    fail_msg: "kea_install_source must be one of {{ __kea_sources.keys() | list }}"
+    quiet: true
+
+- name: Assert every subnet has a unique id
+  ansible.builtin.assert:
+    that:
+      - item.subnets | selectattr('id', 'undefined') | list | length == 0
+      - item.subnets | map(attribute='id') | list | unique | length == item.subnets | length
+    fail_msg: "Every {{ item.family }} subnet needs a unique 'id' (shared-network subnets included)."
+    quiet: true
+  loop:
+    - family: DHCPv4
+      subnets: "{{ kea_dhcp4_subnets + (kea_dhcp4_shared_networks | map(attribute='subnet4', default=[]) | flatten) }}"
+    - family: DHCPv6
+      subnets: "{{ kea_dhcp6_subnets + (kea_dhcp6_shared_networks | map(attribute='subnet6', default=[]) | flatten) }}"
+  loop_control:
+    label: "{{ item.family }}"
+
+- name: Assert HA configuration
+  when: kea_ha_enabled | bool
+  block:
+    - name: Assert HA mode and peers
+      ansible.builtin.assert:
+        that:
+          - kea_ha_mode in ['hot-standby', 'load-balancing', 'passive-backup']
+          - kea_ha_peers | length >= 2 or kea_ha_mode == 'passive-backup'
+          - kea_ha_this_server_name in (kea_ha_peers | map(attribute='name') | list)
+          - kea_ha_peers | selectattr('role', 'equalto', 'primary') | list | length == 1
+          - kea_hook_lease_cmds | bool
+        fail_msg: >-
+          HA needs a valid kea_ha_mode, at least two kea_ha_peers with exactly one
+          primary, this server ({{ kea_ha_this_server_name }}) listed among them, and
+          kea_hook_lease_cmds enabled.
+        quiet: true
+
+    - name: Assert every peer has an address or url
+      ansible.builtin.assert:
+        that: item.url is defined or item.address is defined
+        fail_msg: "HA peer {{ item.name }} needs 'address' or 'url'."
+        quiet: true
+      loop: "{{ kea_ha_peers }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Assert dedicated HA listener has multi-threading
+      ansible.builtin.assert:
+        that: not (kea_ha_dedicated_listener | bool) or (kea_multi_threading_enabled | bool)
+        fail_msg: kea_ha_dedicated_listener requires kea_multi_threading_enabled.
+        quiet: true
+
+    - name: Assert peers can reach the Control Agent
+      ansible.builtin.assert:
+        that:
+          - kea_ctrl_agent_enabled | bool
+          - kea_ctrl_agent_host not in ['127.0.0.1', '::1', 'localhost']
+        fail_msg: >-
+          Without a dedicated HA listener, peers talk through the Control Agent,
+          so kea_ctrl_agent_host must be an address the other peers can reach.
+        quiet: true
+      when: not (kea_ha_dedicated_listener | bool)
+
+- name: Assert DDNS configuration
+  when: kea_ddns_enabled | bool
+  ansible.builtin.assert:
+    that:
+      - kea_ddns_forward_domains | length > 0 or kea_ddns_reverse_domains | length > 0
+      - not (kea_ddns_gss_tsig_enabled | bool) or kea_ddns_gss_tsig_server_principal | length > 0
+      - not (kea_ddns_gss_tsig_enabled | bool) or kea_ddns_gss_tsig_client_principal | length > 0
+    fail_msg: >-
+      DDNS needs at least one forward or reverse domain, and GSS-TSIG needs
+      kea_ddns_gss_tsig_server_principal and kea_ddns_gss_tsig_client_principal.
+    quiet: true
+
+- name: Assert phpIPAM sync prerequisites
+  when: kea_phpipam_sync_enabled | bool
+  ansible.builtin.assert:
+    that:
+      - kea_ctrl_agent_enabled | bool
+      - kea_hook_host_cmds | bool
+      - kea_hosts_database | length > 0
+      - kea_phpipam_token | length > 0
+      - kea_phpipam_subnet_map | length > 0
+    fail_msg: >-
+      phpIPAM sync needs the Control Agent, the host_cmds hook, a hosts
+      database (kea_hosts_database), kea_phpipam_token and kea_phpipam_subnet_map.
+    quiet: true
+
+- name: Assert FIPS mode is enabled
+  ansible.builtin.assert:
+    that: ansible_facts['fips'] | default(false) | bool
+    fail_msg: >-
+      kea_fips_required is set but the host is not in FIPS mode. Enable it with
+      "fips-mode-setup --enable" (EL8/EL9) or install with fips=1 (EL10), then reboot.
+    quiet: true
+  when: kea_fips_required | bool
+
+- name: Assert DDNS keys use FIPS-approved algorithms
+  ansible.builtin.assert:
+    that: >-
+      kea_ddns_tsig_keys | map(attribute='algorithm', default='HMAC-MD5')
+      | map('upper') | select('in', ['HMAC-MD5', 'HMAC-MD5.SIG-ALG.REG.INT']) | list | length == 0
+    fail_msg: >-
+      HMAC-MD5 TSIG keys are not allowed in FIPS mode. Use HMAC-SHA256 or stronger
+      (Kea also defaults to HMAC-MD5 when a key has no algorithm).
+    quiet: true
+  when:
+    - kea_ddns_enabled | bool
+    - ansible_facts['fips'] | default(false) | bool or kea_fips_required | bool

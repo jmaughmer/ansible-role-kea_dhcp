@@ -1,0 +1,21 @@
+---
+- name: Converge
+  hosts: kea_cluster
+  pre_tasks:
+    - name: Build the cluster from the addresses podman assigned
+      ansible.builtin.set_fact:
+        kea_ha_peers:
+          - { name: kea1, address: "{{ hostvars['kea1'].ansible_facts.default_ipv4.address }}", role: primary }
+          - { name: kea2, address: "{{ hostvars['kea2'].ansible_facts.default_ipv4.address }}", role: standby }
+        kea_dhcp4_subnets:
+          - id: 1
+            subnet: "{{ net }}"
+            pools: [{ pool: "{{ base }}.100 - {{ base }}.200" }]
+      vars:
+        # podman networks are /24s.
+        net: "{{ ansible_facts.default_ipv4.network }}/{{ ansible_facts.default_ipv4.prefix }}"
+        base: "{{ ansible_facts.default_ipv4.network | regex_replace('\\.0$', '') }}"
+  tasks:
+    - name: Include the role
+      ansible.builtin.include_role:
+        name: ansible-role-kea_dhcp

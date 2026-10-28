@@ -1,0 +1,13 @@
+# {{ ansible_managed }}
+[libdefaults]
+  default_realm = {{ kea_krb5_realm }}
+  dns_lookup_kdc = {{ 'false' if kea_krb5_kdcs | length > 0 else 'true' }}
+
+{% if kea_krb5_kdcs | length > 0 %}
+[realms]
+  {{ kea_krb5_realm }} = {
+{% for kdc in kea_krb5_kdcs %}
+    kdc = {{ kdc }}
+{% endfor %}
+  }
+{% endif %}

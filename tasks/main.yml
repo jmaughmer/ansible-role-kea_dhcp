@@ -1,0 +1,47 @@
+---
+- name: Validate role variables
+  ansible.builtin.import_tasks: assert.yml
+  tags: [kea, kea_assert]
+
+- name: Configure package repositories
+  ansible.builtin.import_tasks: repo.yml
+  tags: [kea, kea_install]
+
+- name: Install Kea
+  ansible.builtin.import_tasks: install.yml
+  tags: [kea, kea_install]
+
+- name: Apply performance tuning
+  ansible.builtin.import_tasks: tuning.yml
+  tags: [kea, kea_tuning]
+
+- name: Initialise the host reservation database
+  ansible.builtin.include_tasks: database.yml
+  when: kea_db_init | bool and kea_hosts_database | length > 0
+  tags: [kea, kea_database]
+
+- name: Configure Kea
+  ansible.builtin.import_tasks: config.yml
+  tags: [kea, kea_config]
+
+- name: Configure SELinux and FIPS settings
+  ansible.builtin.import_tasks: security.yml
+  tags: [kea, kea_security, kea_selinux, kea_fips]
+
+- name: Configure phpIPAM reservation sync
+  ansible.builtin.include_tasks: phpipam_sync.yml
+  when: kea_phpipam_sync_enabled | bool
+  tags: [kea, kea_phpipam]
+
+- name: Configure fapolicyd trust
+  ansible.builtin.include_tasks: fapolicyd.yml
+  when: kea_fapolicyd_manage | bool
+  tags: [kea, kea_security, kea_fapolicyd]
+
+- name: Configure the firewall
+  ansible.builtin.import_tasks: firewall.yml
+  tags: [kea, kea_firewall]
+
+- name: Manage Kea services
+  ansible.builtin.import_tasks: services.yml
+  tags: [kea, kea_service]

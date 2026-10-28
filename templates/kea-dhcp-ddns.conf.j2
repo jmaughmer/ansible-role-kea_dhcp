@@ -1,0 +1,44 @@
+# {{ ansible_managed }}
+{% import '_macros.j2' as m with context %}
+{% set ns = namespace(forward=[], reverse=[], hooks=[]) %}
+{% for domain in kea_ddns_forward_domains %}
+{%   set ns.forward = ns.forward + [{"dns-servers": kea_ddns_dns_servers} | combine(domain)] %}
+{% endfor %}
+{% for domain in kea_ddns_reverse_domains %}
+{%   set ns.reverse = ns.reverse + [{"dns-servers": kea_ddns_dns_servers} | combine(domain)] %}
+{% endfor %}
+{% if kea_ddns_gss_tsig_enabled | bool %}
+{%   set servers = [] %}
+{%   for server in (kea_ddns_gss_tsig_servers if kea_ddns_gss_tsig_servers | length > 0 else kea_ddns_dns_servers) %}
+{%     set _ = servers.append({"id": server.id | default('dns' ~ loop.index), "domain-names": server['domain-names'] | default([]), "ip-address": server['ip-address'], "port": server.port | default(53) | int}) %}
+{%   endfor %}
+{%   set ns.hooks = [{
+  "library": kea_hooks_dir ~ '/' ~ __kea_hook_files.gss_tsig,
+  "parameters": {
+    "server-principal": kea_ddns_gss_tsig_server_principal,
+    "client-principal": kea_ddns_gss_tsig_client_principal,
+    "client-keytab": "FILE:" ~ kea_ddns_gss_tsig_keytab_path,
+    "credentials-cache": kea_ddns_gss_tsig_credentials_cache,
+    "tkey-lifetime": kea_ddns_gss_tsig_tkey_lifetime | int,
+    "rekey-interval": kea_ddns_gss_tsig_rekey_interval | int,
+    "retry-interval": kea_ddns_gss_tsig_retry_interval | int,
+    "tkey-protocol": kea_ddns_gss_tsig_tkey_protocol,
+    "fallback": kea_ddns_gss_tsig_fallback | bool,
+    "servers": servers
+  }
+}] %}
+{% endif %}
+{% set cfg = {
+  "ip-address": kea_ddns_ip_address,
+  "port": kea_ddns_port | int,
+  "dns-server-timeout": kea_ddns_dns_server_timeout | int,
+  "ncr-protocol": "UDP",
+  "ncr-format": "JSON",
+  "control-socket": {"socket-type": "unix", "socket-name": __kea_ddns_socket},
+  "tsig-keys": kea_ddns_tsig_keys,
+  "forward-ddns": {"ddns-domains": ns.forward},
+  "reverse-ddns": {"ddns-domains": ns.reverse},
+  "hooks-libraries": ns.hooks + kea_ddns_extra_hooks,
+  "loggers": m.loggers('kea-dhcp-ddns', 'kea-dhcp-ddns.log', kea_ddns_loggers, kea_ddns_extra_loggers) | from_json
+} | combine(kea_ddns_extra_config, recursive=true) %}
+{{ {"DhcpDdns": cfg} | to_nice_json(indent=2) }}

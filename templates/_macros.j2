@@ -1,0 +1,173 @@
+{#- Helpers shared by the Kea configuration templates. Each macro renders
+    JSON so callers can turn it back into data with from_json. -#}
+
+{%- macro loggers(logger_name, log_file, override, extra) -%}
+{%- if override | length > 0 -%}
+{{ override | to_json }}
+{%- else -%}
+{%- if kea_log_output == 'file' -%}
+{%- set output = {"output": kea_log_dir ~ '/' ~ log_file, "maxsize": kea_log_maxsize | int, "maxver": kea_log_maxver | int, "flush": kea_log_flush | bool} -%}
+{%- elif kea_log_output == 'syslog' -%}
+{%- set output = {"output": 'syslog:' ~ kea_log_syslog_name if kea_log_syslog_name | length > 0 else 'syslog'} -%}
+{%- else -%}
+{%- set output = {"output": kea_log_output} -%}
+{%- endif -%}
+{%- if kea_log_pattern | length > 0 -%}
+{%- set output = output | combine({"pattern": kea_log_pattern}) -%}
+{%- endif -%}
+{%- set main = {"name": logger_name, "output-options": [output], "severity": kea_log_severity | upper, "debuglevel": kea_log_debuglevel | int} -%}
+{{ ([main] + extra) | to_json }}
+{%- endif -%}
+{%- endmacro -%}
+
+{%- macro db_hooks(databases) -%}
+{%- set types = databases | select('mapping') | map(attribute='type', default='') | list -%}
+{%- set hooks = [] -%}
+{%- if __kea_version is version('2.7.4', '>=') -%}
+{%- if 'mysql' in types -%}{%- set _ = hooks.append({"library": kea_hooks_dir ~ '/' ~ __kea_hook_files.mysql}) -%}{%- endif -%}
+{%- if 'postgresql' in types -%}{%- set _ = hooks.append({"library": kea_hooks_dir ~ '/' ~ __kea_hook_files.pgsql}) -%}{%- endif -%}
+{%- endif -%}
+{{ hooks | to_json }}
+{%- endmacro -%}
+
+{%- macro cmd_hooks() -%}
+{%- set hooks = [] -%}
+{%- for hook in ['lease_cmds', 'host_cmds', 'stat_cmds', 'subnet_cmds'] if lookup('vars', 'kea_hook_' ~ hook) | bool -%}
+{%- set _ = hooks.append({"library": kea_hooks_dir ~ '/' ~ __kea_hook_files[hook]}) -%}
+{%- endfor -%}
+{{ hooks | to_json }}
+{%- endmacro -%}
+
+{%- macro legal_log_hook(base_name) -%}
+{%- set hooks = [] -%}
+{%- if kea_legal_log_enabled | bool -%}
+{%- set params = {"path": kea_legal_log_path, "base-name": base_name} | combine(kea_legal_log_parameters) -%}
+{%- set _ = hooks.append({"library": kea_hooks_dir ~ '/' ~ __kea_hook_files.legal_log, "parameters": params}) -%}
+{%- endif -%}
+{{ hooks | to_json }}
+{%- endmacro -%}
+
+{%- macro ha_hook(port) -%}
+{%- set hooks = [] -%}
+{%- if kea_ha_enabled | bool -%}
+{%- set peers = [] -%}
+{%- for peer in kea_ha_peers -%}
+{%- if peer.url is defined -%}
+{%- set url = peer.url -%}
+{%- else -%}
+{%- set host = '[' ~ peer.address ~ ']' if ':' in (peer.address | string) else peer.address -%}
+{%- set url = 'http://' ~ host ~ ':' ~ ((port if kea_ha_dedicated_listener | bool else kea_ctrl_agent_port) | string) ~ '/' -%}
+{%- endif -%}
+{%- set p = {"name": peer.name, "url": url, "role": peer.role} -%}
+{%- if peer.role != 'backup' -%}
+{%- set p = p | combine({"auto-failover": peer.auto_failover | default(kea_ha_auto_failover) | bool}) -%}
+{%- endif -%}
+{%- if kea_ha_basic_auth_user | length > 0 -%}
+{%- set p = p | combine({"basic-auth-user": kea_ha_basic_auth_user, "basic-auth-password-file": kea_config_dir ~ '/kea-ha-password'}) -%}
+{%- endif -%}
+{%- set _ = peers.append(p) -%}
+{%- endfor -%}
+{%- set rel = {
+  "this-server-name": kea_ha_this_server_name,
+  "mode": kea_ha_mode,
+  "heartbeat-delay": kea_ha_heartbeat_delay | int,
+  "max-response-delay": kea_ha_max_response_delay | int,
+  "max-ack-delay": kea_ha_max_ack_delay | int,
+  "max-unacked-clients": kea_ha_max_unacked_clients | int,
+  "max-rejected-lease-updates": kea_ha_max_rejected_lease_updates | int,
+  "sync-timeout": kea_ha_sync_timeout | int,
+  "sync-page-limit": kea_ha_sync_page_limit | int,
+  "send-lease-updates": kea_ha_send_lease_updates | bool,
+  "sync-leases": kea_ha_sync_leases | bool,
+  "wait-backup-ack": kea_ha_wait_backup_ack | bool,
+  "multi-threading": {
+    "enable-multi-threading": kea_multi_threading_enabled | bool,
+    "http-dedicated-listener": kea_ha_dedicated_listener | bool,
+    "http-listener-threads": kea_ha_listener_threads | int,
+    "http-client-threads": kea_ha_client_threads | int
+  },
+  "peers": peers
+} -%}
+{%- if kea_ha_mode == 'load-balancing' and kea_ha_delayed_updates_limit | int > 0 -%}
+{%- set rel = rel | combine({"delayed-updates-limit": kea_ha_delayed_updates_limit | int}) -%}
+{%- endif -%}
+{%- set rel = rel | combine(kea_ha_extra_parameters, recursive=true) -%}
+{%- set _ = hooks.append({"library": kea_hooks_dir ~ '/' ~ __kea_hook_files.ha, "parameters": {"high-availability": [rel]}}) -%}
+{%- endif -%}
+{{ hooks | to_json }}
+{%- endmacro -%}
+
+{%- macro ddns_globals() -%}
+{%- set cfg = {} -%}
+{%- if kea_ddns_enabled | bool -%}
+{%- set cfg = {
+  "dhcp-ddns": {
+    "enable-updates": true,
+    "server-ip": kea_ddns_ip_address,
+    "server-port": kea_ddns_port | int,
+    "max-queue-size": kea_ddns_max_queue_size | int,
+    "ncr-protocol": "UDP",
+    "ncr-format": "JSON"
+  },
+  "ddns-send-updates": kea_ddns_send_updates | bool,
+  "ddns-override-no-update": kea_ddns_override_no_update | bool,
+  "ddns-override-client-update": kea_ddns_override_client_update | bool,
+  "ddns-replace-client-name": kea_ddns_replace_client_name,
+  "ddns-generated-prefix": kea_ddns_generated_prefix,
+  "ddns-qualifying-suffix": kea_ddns_qualifying_suffix,
+  "ddns-update-on-renew": kea_ddns_update_on_renew | bool,
+  "hostname-char-set": kea_hostname_char_set,
+  "hostname-char-replacement": kea_hostname_char_replacement
+} -%}
+{%- if __kea_version is version('2.5.0', '>=') -%}
+{%- set cfg = cfg | combine({"ddns-conflict-resolution-mode": kea_ddns_conflict_resolution_mode}) -%}
+{%- else -%}
+{%- set cfg = cfg | combine({"ddns-use-conflict-resolution": kea_ddns_conflict_resolution_mode in ['check-with-dhcid', 'check-exists-with-dhcid']}) -%}
+{%- endif -%}
+{%- if kea_ddns_ttl_percent is not none -%}
+{%- set cfg = cfg | combine({"ddns-ttl-percent": kea_ddns_ttl_percent | float}) -%}
+{%- endif -%}
+{%- endif -%}
+{{ cfg | to_json }}
+{%- endmacro -%}
+
+{%- macro multi_threading(family, lease_db, pool_size, queue_size) -%}
+{%- set rec = __kea_mt_recommended[family][lease_db.type | default('memfile')] | default(__kea_mt_recommended[family].memfile) -%}
+{{ {
+  "enable-multi-threading": kea_multi_threading_enabled | bool,
+  "thread-pool-size": (rec['thread-pool-size'] if pool_size is none else pool_size) | int,
+  "packet-queue-size": (rec['packet-queue-size'] if queue_size is none else queue_size) | int
+} | to_json }}
+{%- endmacro -%}
+
+{%- macro pxe_v4_classes() -%}
+{%- set classes = [] -%}
+{%- if kea_pxe_enabled | bool -%}
+{%- set common = {} -%}
+{%- if kea_pxe_next_server | length > 0 -%}{%- set common = common | combine({"next-server": kea_pxe_next_server}) -%}{%- endif -%}
+{%- if kea_pxe_server_hostname | length > 0 -%}{%- set common = common | combine({"server-hostname": kea_pxe_server_hostname}) -%}{%- endif -%}
+{%- set guard = " and not member('PXE_IPXE')" if kea_pxe_ipxe_script_url | length > 0 else "" -%}
+{%- if kea_pxe_ipxe_script_url | length > 0 -%}
+{%- set _ = classes.append(common | combine({"name": "PXE_IPXE", "test": "option[77].hex == 'iPXE'", "boot-file-name": kea_pxe_ipxe_script_url})) -%}
+{%- endif -%}
+{%- for arch in kea_pxe_v4_architectures -%}
+{%- set c = common | combine({"name": arch.name, "test": "option[93].hex == " ~ arch.arch ~ guard, "boot-file-name": arch.boot_file}) -%}
+{%- if arch.next_server is defined -%}{%- set c = c | combine({"next-server": arch.next_server}) -%}{%- endif -%}
+{%- set _ = classes.append(c) -%}
+{%- endfor -%}
+{%- for http in [{"name": "PXE_HTTP_X64", "arch": "0x0010", "url": kea_pxe_http_boot_url_x64}, {"name": "PXE_HTTP_ARM64", "arch": "0x0013", "url": kea_pxe_http_boot_url_arm64}] if http.url | length > 0 -%}
+{%- set _ = classes.append({"name": http.name, "test": "option[93].hex == " ~ http.arch ~ guard, "boot-file-name": http.url, "option-data": [{"name": "vendor-class-identifier", "data": "HTTPClient"}]}) -%}
+{%- endfor -%}
+{%- endif -%}
+{{ classes | to_json }}
+{%- endmacro -%}
+
+{%- macro pxe_v6_classes() -%}
+{%- set classes = [] -%}
+{%- if kea_pxe_enabled | bool -%}
+{%- for arch in kea_pxe_v6_architectures -%}
+{%- set _ = classes.append({"name": arch.name, "test": "option[61].hex == " ~ arch.arch, "option-data": [{"name": "bootfile-url", "data": arch.url}]}) -%}
+{%- endfor -%}
+{%- endif -%}
+{{ classes | to_json }}
+{%- endmacro -%}

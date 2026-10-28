@@ -1,0 +1,52 @@
+---
+- name: Verify HA
+  hosts: kea_cluster
+  gather_facts: false
+  vars:
+    api: &api
+      url: http://127.0.0.1:8000/
+      method: POST
+      url_username: admin
+      url_password: molecule-secret
+      force_basic_auth: true
+      body_format: json
+  tasks:
+    - name: Wait for both servers to reach hot-standby
+      ansible.builtin.uri:
+        <<: *api
+        body: { command: ha-heartbeat, service: [dhcp4] }
+      register: hb
+      until: hb.json[0].arguments.state | default('') == 'hot-standby'
+      retries: 30
+      delay: 2
+
+    - name: Stop DHCPv4 on the primary
+      ansible.builtin.systemd_service:
+        name: kea-dhcp4
+        state: stopped
+      when: inventory_hostname == 'kea1'
+
+    - name: Standby takes over (partner-down)
+      ansible.builtin.uri:
+        <<: *api
+        body: { command: ha-heartbeat, service: [dhcp4] }
+      register: hb
+      until: hb.json[0].arguments.state | default('') == 'partner-down'
+      retries: 30
+      delay: 2
+      when: inventory_hostname == 'kea2'
+
+    - name: Start DHCPv4 on the primary again
+      ansible.builtin.systemd_service:
+        name: kea-dhcp4
+        state: started
+      when: inventory_hostname == 'kea1'
+
+    - name: Cluster returns to hot-standby
+      ansible.builtin.uri:
+        <<: *api
+        body: { command: ha-heartbeat, service: [dhcp4] }
+      register: hb
+      until: hb.json[0].arguments.state | default('') == 'hot-standby'
+      retries: 45
+      delay: 2

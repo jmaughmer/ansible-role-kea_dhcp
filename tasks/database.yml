@@ -1,0 +1,44 @@
+---
+# kea-admin creates or upgrades the schema used by the host (and optionally
+# lease) backends. The database and its user must already exist.
+- name: Manage the Kea database schema
+  run_once: true
+  no_log: true
+  vars:
+    __kea_admin_args:
+      - "{{ __kea_db_backend_args[kea_hosts_database.type] }}"
+      - -u
+      - "{{ kea_hosts_database.user }}"
+      - -p
+      - "{{ kea_hosts_database.password }}"
+      - -n
+      - "{{ kea_hosts_database.name }}"
+      - -h
+      - "{{ kea_hosts_database.host | default('localhost') }}"
+      - -P
+      - "{{ kea_hosts_database.port | default(3306 if kea_hosts_database.type == 'mysql' else 5432) | string }}"
+  block:
+    - name: Check the Kea schema version
+      ansible.builtin.command:
+        argv: "{{ ['kea-admin', 'db-version'] + __kea_admin_args }}"
+      register: __kea_db_version
+      changed_when: false
+      failed_when: false
+
+    - name: Initialise the Kea schema
+      ansible.builtin.command:
+        argv: "{{ ['kea-admin', 'db-init'] + __kea_admin_args }}"
+      when: __kea_db_version.rc != 0 or (__kea_db_version.stdout | trim) in ['', '0.0']
+      changed_when: true
+
+    - name: Upgrade the Kea schema
+      ansible.builtin.command:
+        argv: "{{ ['kea-admin', 'db-upgrade'] + __kea_admin_args }}"
+      when: __kea_db_version.rc == 0 and (__kea_db_version.stdout | trim) not in ['', '0.0']
+      changed_when: false
+
+    - name: Re-check the Kea schema version
+      ansible.builtin.command:
+        argv: "{{ ['kea-admin', 'db-version'] + __kea_admin_args }}"
+      register: __kea_db_version_after
+      changed_when: __kea_db_version_after.stdout != __kea_db_version.stdout

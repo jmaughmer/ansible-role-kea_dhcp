@@ -1,0 +1,7 @@
+---
+profile: production
+exclude_paths:
+  - .cache/
+  - .github/
+skip_list:
+  - var-naming[no-role-prefix]  # internal __kea_ variables are intentionally double-underscored

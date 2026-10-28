@@ -1,0 +1,13 @@
+---
+galaxy_info:
+  role_name: kea_dhcp
+  namespace: jmaughmer
+  author: Justin Maughmer
+  description: Install and configure the ISC Kea DHCP server (DHCPv4/DHCPv6, HA, DDNS, PXE) on RHEL 8, 9 and 10
+  license: MIT
+  min_ansible_version: "2.15"
+  platforms:
+    - name: EL
+      versions: ["8", "9", "10"]
+  galaxy_tags: [dhcp, kea, dhcpv6, networking, ha, pxe, ddns]
+dependencies: []

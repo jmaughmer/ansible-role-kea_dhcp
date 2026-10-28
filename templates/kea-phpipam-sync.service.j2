@@ -1,0 +1,15 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Sync phpIPAM addresses into Kea reservations
+After=network-online.target {{ __kea_source.ctrl_agent_service }}.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User={{ __kea_user }}
+Group={{ __kea_group }}
+ExecStart=/usr/local/libexec/kea-phpipam-sync --config {{ kea_config_dir }}/kea-phpipam-sync.json
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes

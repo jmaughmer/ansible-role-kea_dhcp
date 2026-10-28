@@ -1,0 +1,22 @@
+# {{ ansible_managed }}
+{% import '_macros.j2' as m with context %}
+{% set sockets = {} %}
+{% if kea_dhcp4_enabled | bool %}{% set sockets = sockets | combine({"dhcp4": {"socket-type": "unix", "socket-name": __kea_dhcp4_socket}}) %}{% endif %}
+{% if kea_dhcp6_enabled | bool %}{% set sockets = sockets | combine({"dhcp6": {"socket-type": "unix", "socket-name": __kea_dhcp6_socket}}) %}{% endif %}
+{% if kea_ddns_enabled | bool %}{% set sockets = sockets | combine({"d2": {"socket-type": "unix", "socket-name": __kea_ddns_socket}}) %}{% endif %}
+{% set cfg = {
+  "http-host": kea_ctrl_agent_host,
+  "http-port": kea_ctrl_agent_port | int,
+  "control-sockets": sockets,
+  "loggers": m.loggers('kea-ctrl-agent', 'kea-ctrl-agent.log', kea_ctrl_agent_loggers, kea_ctrl_agent_extra_loggers) | from_json
+} %}
+{% if kea_api_users | length > 0 %}
+{%   set clients = [] %}
+{%   for u in kea_api_users %}{% set _ = clients.append({"user": u.user, "password-file": "kea-api-password-" ~ u.user}) %}{% endfor %}
+{%   set cfg = cfg | combine({"authentication": {"type": "basic", "realm": kea_api_auth_realm, "directory": kea_config_dir, "clients": clients}}) %}
+{% endif %}
+{% if kea_ctrl_agent_tls_enabled | bool %}
+{%   set cfg = cfg | combine({"trust-anchor": kea_ctrl_agent_tls_ca_file, "cert-file": kea_ctrl_agent_tls_cert_file, "key-file": kea_ctrl_agent_tls_key_file, "cert-required": kea_ctrl_agent_tls_cert_required | bool}) %}
+{% endif %}
+{% set cfg = cfg | combine(kea_ctrl_agent_extra_config, recursive=true) %}
+{{ {"Control-agent": cfg} | to_nice_json(indent=2) }}

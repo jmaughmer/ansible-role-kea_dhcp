@@ -1,0 +1,45 @@
+# {{ ansible_managed }}
+{% import '_macros.j2' as m with context %}
+{% set hooks = (m.db_hooks([kea_dhcp6_lease_database, kea_dhcp6_hosts_database]) | from_json)
+             + (m.cmd_hooks() | from_json)
+             + (m.legal_log_hook(kea_legal_log_base_name_v6) | from_json)
+             + (m.ha_hook(kea_ha_dhcp6_port) | from_json)
+             + kea_dhcp6_extra_hooks %}
+{% set cfg = {
+  "interfaces-config": {
+    "interfaces": kea_dhcp6_interfaces,
+    "service-sockets-max-retries": kea_interfaces_service_sockets_max_retries | int,
+    "service-sockets-retry-wait-time": kea_interfaces_service_sockets_retry_wait_time | int
+  },
+  "control-socket": {"socket-type": "unix", "socket-name": __kea_dhcp6_socket},
+  "lease-database": kea_dhcp6_lease_database,
+  "valid-lifetime": kea_dhcp6_valid_lifetime | int,
+  "preferred-lifetime": kea_dhcp6_preferred_lifetime | int,
+  "renew-timer": kea_dhcp6_renew_timer | int,
+  "rebind-timer": kea_dhcp6_rebind_timer | int,
+  "calculate-tee-times": kea_calculate_tee_times | bool,
+  "cache-threshold": kea_cache_threshold | float,
+  "parked-packet-limit": kea_parked_packet_limit | int,
+  "early-global-reservations-lookup": kea_early_global_reservations_lookup | bool,
+  "host-reservation-identifiers": kea_dhcp6_host_reservation_identifiers,
+  "reservations-global": kea_reservations_global | bool,
+  "reservations-in-subnet": kea_reservations_in_subnet | bool,
+  "reservations-out-of-pool": kea_reservations_out_of_pool | bool,
+  "multi-threading": m.multi_threading('dhcp6', kea_dhcp6_lease_database, kea_dhcp6_thread_pool_size, kea_dhcp6_packet_queue_size) | from_json,
+  "option-def": kea_dhcp6_option_def,
+  "option-data": kea_dhcp6_option_data,
+  "client-classes": kea_dhcp6_client_classes + (m.pxe_v6_classes() | from_json),
+  "reservations": kea_dhcp6_reservations,
+  "subnet6": kea_dhcp6_subnets,
+  "shared-networks": kea_dhcp6_shared_networks,
+  "hooks-libraries": hooks,
+  "loggers": m.loggers('kea-dhcp6', 'kea-dhcp6.log', kea_dhcp6_loggers, kea_dhcp6_extra_loggers) | from_json
+} %}
+{% if kea_dhcp6_hosts_database | length > 0 %}
+{%   set cfg = cfg | combine({"hosts-database": kea_dhcp6_hosts_database}) %}
+{% endif %}
+{% if kea_dhcp6_server_id | length > 0 %}
+{%   set cfg = cfg | combine({"server-id": kea_dhcp6_server_id}) %}
+{% endif %}
+{% set cfg = cfg | combine(m.ddns_globals() | from_json) | combine(kea_dhcp6_extra_config, recursive=true) %}
+{{ {"Dhcp6": cfg} | to_nice_json(indent=2) }}

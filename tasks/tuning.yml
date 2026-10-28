@@ -1,0 +1,33 @@
+---
+- name: Apply kernel network tuning
+  ansible.posix.sysctl:
+    name: "{{ item.key }}"
+    value: "{{ item.value }}"
+    sysctl_file: /etc/sysctl.d/90-kea.conf
+    state: present
+    reload: true
+  loop: "{{ kea_sysctl_settings | dict2items }}"
+  when: kea_sysctl_manage | bool
+
+- name: Create systemd drop-in directories
+  ansible.builtin.file:
+    path: "/etc/systemd/system/{{ item }}.service.d"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop: "{{ __kea_enabled_services }}"
+  when: kea_systemd_override_manage | bool
+
+- name: Install systemd drop-ins
+  ansible.builtin.template:
+    src: systemd-override.conf.j2
+    dest: "/etc/systemd/system/{{ item }}.service.d/90-ansible.conf"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: "{{ __kea_enabled_services }}"
+  when: kea_systemd_override_manage | bool
+  notify:
+    - Reload systemd
+    - Restart kea
