@@ -5,13 +5,17 @@
     - name: Build the cluster from the addresses podman assigned
       ansible.builtin.set_fact:
         kea_ha_peers:
-          - { name: kea1, address: "{{ hostvars['kea1'].ansible_facts.default_ipv4.address }}", role: primary }
-          - { name: kea2, address: "{{ hostvars['kea2'].ansible_facts.default_ipv4.address }}", role: standby }
+          - { name: "{{ primary }}", address: "{{ hostvars[primary].ansible_facts.default_ipv4.address }}", role: primary }
+          - { name: "{{ standby }}", address: "{{ hostvars[standby].ansible_facts.default_ipv4.address }}", role: standby }
         kea_dhcp4_subnets:
           - id: 1
             subnet: "{{ net }}"
             pools: [{ pool: "{{ base }}.100 - {{ base }}.200" }]
       vars:
+        # Host names carry a per-checkout suffix (see molecule.yml); sorted,
+        # kea-ha-primary-* comes before kea-ha-standby-*.
+        primary: "{{ (groups['kea_cluster'] | sort)[0] }}"
+        standby: "{{ (groups['kea_cluster'] | sort)[1] }}"
         # podman networks are /24s.
         net: "{{ ansible_facts.default_ipv4.network }}/{{ ansible_facts.default_ipv4.prefix }}"
         base: "{{ ansible_facts.default_ipv4.network | regex_replace('\\.0$', '') }}"

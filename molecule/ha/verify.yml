@@ -3,6 +3,9 @@
   hosts: kea_cluster
   gather_facts: false
   vars:
+    # Host names carry a per-checkout suffix (see molecule.yml).
+    primary: "{{ (groups['kea_cluster'] | sort)[0] }}"
+    standby: "{{ (groups['kea_cluster'] | sort)[1] }}"
     api: &api
       url: http://127.0.0.1:8000/
       method: POST
@@ -24,7 +27,7 @@
       ansible.builtin.systemd_service:
         name: kea-dhcp4
         state: stopped
-      when: inventory_hostname == 'kea1'
+      when: inventory_hostname == primary
 
     - name: Standby takes over (partner-down)
       ansible.builtin.uri:
@@ -34,13 +37,13 @@
       until: hb.json[0].arguments.state | default('') == 'partner-down'
       retries: 30
       delay: 2
-      when: inventory_hostname == 'kea2'
+      when: inventory_hostname == standby
 
     - name: Start DHCPv4 on the primary again
       ansible.builtin.systemd_service:
         name: kea-dhcp4
         state: started
-      when: inventory_hostname == 'kea1'
+      when: inventory_hostname == primary
 
     - name: Cluster returns to hot-standby
       ansible.builtin.uri:

@@ -5,8 +5,10 @@ dependency:
   enabled: false
 driver:
   name: podman
+# Names end in TEST_RUN_ID, which scripts/test.sh sets per checkout, so
+# several checkouts can run the same scenario at once.
 platforms:
-  - name: kea-el8
+  - name: kea-el8-${TEST_RUN_ID:-local}
     image: docker.io/almalinux/8-init
     pre_build_image: true
     command: /sbin/init

@@ -5,24 +5,26 @@ dependency:
   enabled: false
 driver:
   name: podman
+# Names end in TEST_RUN_ID, which scripts/test.sh sets per checkout, so
+# several checkouts can run the same scenario at once.
 platforms:
-  - name: kea1
+  - name: kea-ha-primary-${TEST_RUN_ID:-local}
     image: docker.io/almalinux/9-init
     pre_build_image: true
     command: /sbin/init
     systemd: always
     privileged: true
     rootless: true
-    network: kea-ha
+    network: kea-ha-${TEST_RUN_ID:-local}
     groups: [kea_cluster]
-  - name: kea2
+  - name: kea-ha-standby-${TEST_RUN_ID:-local}
     image: docker.io/almalinux/9-init
     pre_build_image: true
     command: /sbin/init
     systemd: always
     privileged: true
     rootless: true
-    network: kea-ha
+    network: kea-ha-${TEST_RUN_ID:-local}
     groups: [kea_cluster]
 provisioner:
   name: ansible

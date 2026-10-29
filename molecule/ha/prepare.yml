@@ -1,0 +1,11 @@
+---
+# The almalinux init images have no iproute, and without it Ansible gathers
+# no network facts; converge.yml builds the cluster from default_ipv4.
+- name: Prepare
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Install iproute
+      ansible.builtin.dnf:
+        name: iproute
+        state: present
