@@ -294,7 +294,30 @@ scripts/test.sh el8        # the default scenario on EL8, under ansible-core 2.1
 
 The script installs podman, Python and git with dnf if they are missing. It builds two virtualenvs under `.cache/test/`: one with current ansible-core, molecule, molecule-plugins[podman], ansible-lint and yamllint, and one with ansible-core 2.16 for EL8. Each virtualenv gets its own pinned collections.
 
-The scenarios run systemd inside the `docker.io/almalinux/<n>-init` images and need internet access to Docker Hub, the ISC repository and EPEL. Podman runs rootless by default. If rootless systemd containers don't work in your WSL setup (for example cgroup v2 delegation is missing), run `sudo scripts/test.sh` to use rootful podman. WSL needs systemd enabled (`[boot] systemd=true` in `/etc/wsl.conf`) for rootless podman.
+The scenarios run systemd inside the `docker.io/almalinux/<n>-init` images and need internet access to Docker Hub, the ISC repository and EPEL. Podman runs rootless by default. If rootless systemd containers don't work in your WSL setup (for example cgroup v2 delegation is missing), run `sudo scripts/test.sh` to use rootful podman.
+
+### One-time AlmaLinux 10 WSL setup
+
+1. Turn on systemd in the distro. Put this in `/etc/wsl.conf`, run `wsl --shutdown` from Windows, then reopen the distro:
+
+   ```ini
+   [boot]
+   systemd=true
+   ```
+
+2. Install the tools: `sudo dnf install -y podman python3 python3-pip git`.
+3. Set up rootless podman for your user:
+
+   ```bash
+   grep -q "^$USER:" /etc/subuid || sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 "$USER"
+   sudo loginctl enable-linger "$USER"
+   podman system migrate
+   podman info          # should succeed and show cgroupVersion: v2
+   ```
+
+4. Clone the repositories side by side under your Linux home directory (for example `~/src/`), not under `/mnt/c`. The Windows mount is slow and does not keep Linux file permissions.
+
+`scripts/test.sh` checks for systemd, cgroup v2, subordinate IDs and a user session before it starts, and prints the fix for anything missing. If rootless systemd containers still won't start, run `sudo scripts/test.sh` to use rootful podman.
 
 ## License
 
