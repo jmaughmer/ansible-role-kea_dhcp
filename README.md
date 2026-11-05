@@ -129,6 +129,27 @@ kea_dhcp4_subnets:
 - The hook ships with ISC's packages and with AppStream's Kea 3.0 on EL10, not with EPEL's Kea on EL8/EL9. The role fails early in that case.
 - Pinging needs `CAP_NET_RAW`. The packaged units already grant it, and the role's systemd drop-in adds it again for `kea-dhcp4`.
 
+## Authoritative mode
+
+`kea_dhcp4_authoritative` decides what `kea-dhcp4` does when a client asks to keep an address Kea has no lease for. This happens when a laptop comes back from sleep, moves from another network, or Kea has lost its lease file.
+
+- `false` (the default, as in Kea): Kea ignores the request. The client waits for it to time out, often 10 seconds or more, before starting over with DHCPDISCOVER, and some clients keep using the stale address meanwhile.
+- `true`: Kea answers with DHCPNAK, and the client starts over at once.
+
+Turn it on where Kea is the only DHCP server for a segment, which includes an HA pair. Leave it off while another server can still answer on the same network, for example during a migration from Windows DHCP with both servers running. In that case Kea would NAK clients the other server leased to.
+
+A subnet or shared network can override the global value:
+
+```yaml
+kea_dhcp4_authoritative: false
+kea_dhcp4_subnets:
+  - id: 1
+    subnet: 10.0.10.0/24
+    authoritative: true        # Kea alone serves this segment
+```
+
+This setting is DHCPv4 only. For a DHCPv6 client on the wrong link, Kea already answers with a NotOnLink status.
+
 ## DHCPv6
 
 ```yaml
@@ -357,6 +378,7 @@ All variables, with comments, are in [`defaults/main.yml`](defaults/main.yml). T
 | Variable | Default |
 |---|---|
 | `kea_dhcp4_enabled` / `kea_dhcp6_enabled` | `true` / `false` |
+| `kea_dhcp4_authoritative` | `false` (see [Authoritative mode](#authoritative-mode)) |
 | `kea_ddns_enabled` | `false` |
 | `kea_ctrl_agent_enabled` | `true` |
 | `kea_ha_enabled` | `false` |

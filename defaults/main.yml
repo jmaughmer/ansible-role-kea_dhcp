@@ -72,6 +72,13 @@ kea_dhcp4_max_valid_lifetime: null
 # How long an offered address is held for the client before its DHCPREQUEST.
 # null (Kea's default of 0) holds nothing. Ping check works best with it set.
 kea_dhcp4_offer_lifetime: null
+# What kea-dhcp4 does with a DHCPREQUEST for an address it has no lease for
+# (a client back from sleep or moved from another network):
+#   false - ignore it; the client times out and starts over (Kea's default)
+#   true  - answer DHCPNAK, so the client starts over at once
+# Turn it on only where Kea is the sole DHCP server, or it NAKs clients that
+# another server leased to. Subnets and shared networks can override it with
+# their own "authoritative" key.
 kea_dhcp4_authoritative: false
 kea_dhcp4_match_client_id: true
 
