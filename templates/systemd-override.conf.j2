@@ -12,6 +12,11 @@ RestartSec={{ kea_systemd_restart_sec }}
 RuntimeDirectory={{ kea_socket_dir | basename }}
 RuntimeDirectoryPreserve=yes
 RuntimeDirectoryMode=0750
+{% if kea_ping_check_enabled | bool and item == __kea_source.dhcp4_service %}
+# Ping check sends ICMP echo through a raw socket. The packaged units
+# already grant this; it is repeated in case one does not.
+AmbientCapabilities=CAP_NET_RAW
+{% endif %}
 {% for key, value in kea_systemd_environment.items() %}
 Environment="{{ key }}={{ value }}"
 {% endfor %}

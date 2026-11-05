@@ -15,6 +15,18 @@
     fail_msg: "kea_install_source must be one of {{ __kea_sources.keys() | list }}"
     quiet: true
 
+- name: Assert ping check is available
+  ansible.builtin.assert:
+    that:
+      - kea_dhcp4_enabled | bool
+      - kea_install_source == 'isc' or ansible_facts['distribution_major_version'] | int >= 10
+    fail_msg: >-
+      kea_ping_check_enabled needs kea_dhcp4_enabled, and the ping_check hook,
+      which ships with kea_install_source 'isc' or with AppStream's Kea on EL10
+      but not with EPEL's Kea on EL8 or EL9.
+    quiet: true
+  when: kea_ping_check_enabled | bool
+
 - name: Assert every subnet has a unique id
   ansible.builtin.assert:
     that:

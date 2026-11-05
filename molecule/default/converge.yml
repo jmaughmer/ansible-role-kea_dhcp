@@ -20,6 +20,20 @@
           - hw-address: "aa:bb:cc:dd:ee:01"
             ip-address: 192.0.2.10
             hostname: printer01
+      - id: 2
+        subnet: 198.51.100.0/24
+        pools: [{ pool: 198.51.100.100 - 198.51.100.200 }]
+        valid-lifetime: 86400
+        min-valid-lifetime: 3600
+        max-valid-lifetime: 172800
+        renew-timer: 43200
+        rebind-timer: 75600
+        user-context: { enable-ping-check: false }
+    kea_dhcp4_min_valid_lifetime: 2000
+    kea_dhcp4_max_valid_lifetime: 8000
+    kea_dhcp4_offer_lifetime: 60
+    kea_ping_check_enabled: true
+    kea_ping_check_reply_timeout: 200
     kea_dhcp6_subnets:
       - id: 1
         subnet: "2001:db8:1::/64"
@@ -30,6 +44,19 @@
           - duid: "01:02:03:04:05:0a:0b:0c:0d:0e"
             ip-addresses: ["2001:db8:1::10"]
             hostname: server01
+      - id: 2
+        subnet: "2001:db8:2::/64"
+        pools: [{ pool: "2001:db8:2::1000 - 2001:db8:2::1fff" }]
+        valid-lifetime: 86400
+        min-valid-lifetime: 3600
+        max-valid-lifetime: 172800
+        preferred-lifetime: 43200
+        min-preferred-lifetime: 1800
+        max-preferred-lifetime: 86400
+        renew-timer: 21600
+        rebind-timer: 34560
+    kea_dhcp6_min_valid_lifetime: 2000
+    kea_dhcp6_max_valid_lifetime: 8000
     kea_pxe_enabled: true
     kea_pxe_next_server: 192.0.2.10
     kea_pxe_ipxe_script_url: http://192.0.2.10/boot.ipxe
@@ -37,9 +64,12 @@
     kea_pxe_v6_architectures:
       - { name: PXE6_UEFI_X64, arch: "0x0007", url: "tftp://[2001:db8:1::10]/shimx64.efi" }
     kea_ddns_qualifying_suffix: corp.example.com.
-    kea_ddns_dns_servers: [{ ip-address: 127.0.0.1 }]
+    kea_ddns_dns_servers: [{ ip-address: 127.0.0.1 }, { ip-address: "::1" }]
     kea_ddns_forward_domains: [{ name: corp.example.com. }]
-    kea_ddns_reverse_domains: [{ name: 2.0.192.in-addr.arpa. }]
+    kea_ddns_reverse_domains:
+      - { name: 2.0.192.in-addr.arpa. }
+      - name: 1.0.0.0.8.b.d.0.1.0.0.2.ip6.arpa.
+        dns-servers: [{ ip-address: "::1", port: 5353 }]
     kea_legal_log_enabled: true
     # fapolicyd is installed (not started) by prepare.yml to test the trust file.
     kea_fapolicyd_trusted_files: [/usr/local/bin/kea-molecule-helper]

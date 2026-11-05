@@ -72,6 +72,76 @@
         classes: "{{ dhcp4['client-classes'] | map(attribute='name') | list }}"
         hooks: "{{ dhcp4['hooks-libraries'] | map(attribute='library') | list }}"
 
+    - name: Assert ping check and DHCPv4 lease times
+      ansible.builtin.assert:
+        that:
+          # Kea wants ping_check loaded before lease_cmds.
+          - libraries.index('libdhcp_ping_check.so') < libraries.index('libdhcp_lease_cmds.so')
+          - ping['parameters']['enable-ping-check']
+          - ping['parameters']['reply-timeout'] == 200
+          - dhcp4['offer-lifetime'] == 60
+          - dhcp4['min-valid-lifetime'] == 2000
+          - dhcp4['max-valid-lifetime'] == 8000
+          - subnet2['valid-lifetime'] == 86400
+          - subnet2['min-valid-lifetime'] == 3600
+          - subnet2['max-valid-lifetime'] == 172800
+          - subnet2['renew-timer'] == 43200
+          - subnet2['rebind-timer'] == 75600
+          - not subnet2['user-context']['enable-ping-check']
+      vars:
+        dhcp4: "{{ config4.json[0].arguments.Dhcp4 }}"
+        libraries: "{{ dhcp4['hooks-libraries'] | map(attribute='library') | map('basename') | list }}"
+        ping: "{{ dhcp4['hooks-libraries'][libraries.index('libdhcp_ping_check.so')] }}"
+        subnet2: "{{ dhcp4.subnet4 | selectattr('id', 'equalto', 2) | first }}"
+
+    - name: Read kea-dhcp4's effective capabilities
+      ansible.builtin.shell:
+        cmd: set -o pipefail; grep CapEff /proc/$(pidof kea-dhcp4)/status | awk '{print $2}'
+        executable: /bin/bash
+      register: capeff
+      changed_when: false
+
+    - name: Assert kea-dhcp4 can open raw sockets for ping check
+      ansible.builtin.assert:
+        # CAP_NET_RAW is capability bit 13.
+        that: (capeff.stdout | int(base=16)) // 8192 % 2 == 1
+        fail_msg: "kea-dhcp4 lacks CAP_NET_RAW (CapEff {{ capeff.stdout }})"
+
+    - name: Fetch the running DHCPv6 and DDNS configurations
+      ansible.builtin.uri:
+        url: "{{ api_url }}"
+        method: POST
+        url_username: "{{ api_user }}"
+        url_password: "{{ api_password }}"
+        force_basic_auth: true
+        body_format: json
+        body: { command: config-get, service: ["{{ item }}"] }
+      register: config_v6_d2
+      loop: [dhcp6, d2]
+
+    - name: Assert DHCPv6 lease times and IPv6 dynamic DNS
+      ansible.builtin.assert:
+        that:
+          - dhcp6['min-valid-lifetime'] == 2000
+          - dhcp6['max-valid-lifetime'] == 8000
+          - subnet2['valid-lifetime'] == 86400
+          - subnet2['preferred-lifetime'] == 43200
+          - subnet2['min-preferred-lifetime'] == 1800
+          - subnet2['max-preferred-lifetime'] == 86400
+          - subnet2['renew-timer'] == 21600
+          - subnet2['rebind-timer'] == 34560
+          - "'::1' in d2['forward-ddns']['ddns-domains'][0]['dns-servers'] | map(attribute='ip-address') | list"
+          - v6zone['dns-servers'] | length == 1
+          - v6zone['dns-servers'][0]['ip-address'] == '::1'
+          - v6zone['dns-servers'][0]['port'] == 5353
+      vars:
+        dhcp6: "{{ config_v6_d2.results[0].json[0].arguments.Dhcp6 }}"
+        d2: "{{ config_v6_d2.results[1].json[0].arguments.DhcpDdns }}"
+        subnet2: "{{ dhcp6.subnet6 | selectattr('id', 'equalto', 2) | first }}"
+        v6zone: >-
+          {{ d2['reverse-ddns']['ddns-domains']
+             | selectattr('name', 'equalto', '1.0.0.0.8.b.d.0.1.0.0.2.ip6.arpa.') | first }}
+
     - name: Look up a DHCPv4 reservation through host_cmds
       ansible.builtin.uri:
         url: "{{ api_url }}"

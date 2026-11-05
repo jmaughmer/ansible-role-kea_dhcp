@@ -38,6 +38,26 @@
 {{ hooks | to_json }}
 {%- endmacro -%}
 
+{%- macro ping_check_hook() -%}
+{%- set hooks = [] -%}
+{%- if kea_ping_check_enabled | bool -%}
+{%- set params = {
+  "enable-ping-check": true,
+  "min-ping-requests": kea_ping_check_min_ping_requests | int,
+  "reply-timeout": kea_ping_check_reply_timeout | int,
+  "ping-cltt-secs": kea_ping_check_cltt_secs | int,
+  "ping-channel-threads": kea_ping_check_channel_threads | int
+} -%}
+{%- set _ = hooks.append({"library": kea_hooks_dir ~ '/' ~ __kea_hook_files.ping_check, "parameters": params}) -%}
+{%- endif -%}
+{{ hooks | to_json }}
+{%- endmacro -%}
+
+{#- Lifetime settings the inventory left as null are omitted. -#}
+{%- macro optional_settings(settings) -%}
+{{ settings | dict2items | rejectattr('value', 'none') | items2dict | to_json }}
+{%- endmacro -%}
+
 {%- macro legal_log_hook(base_name) -%}
 {%- set hooks = [] -%}
 {%- if kea_legal_log_enabled | bool -%}

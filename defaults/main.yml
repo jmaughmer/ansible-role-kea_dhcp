@@ -60,9 +60,18 @@ kea_interfaces_service_sockets_retry_wait_time: 5000
 # =============================================================================
 # Global DHCP parameters
 # =============================================================================
+# Lease times in seconds. These are the server-wide defaults; any subnet or
+# shared network can set its own (see "Subnets and reservations" below).
 kea_dhcp4_valid_lifetime: 4000
 kea_dhcp4_renew_timer: 1000
 kea_dhcp4_rebind_timer: 2000
+# Range a client may request with option 51. null leaves the setting out,
+# so Kea uses valid-lifetime as both bounds and ignores the request.
+kea_dhcp4_min_valid_lifetime: null
+kea_dhcp4_max_valid_lifetime: null
+# How long an offered address is held for the client before its DHCPREQUEST.
+# null (Kea's default of 0) holds nothing. Ping check works best with it set.
+kea_dhcp4_offer_lifetime: null
 kea_dhcp4_authoritative: false
 kea_dhcp4_match_client_id: true
 
@@ -70,6 +79,11 @@ kea_dhcp6_valid_lifetime: 4000
 kea_dhcp6_preferred_lifetime: 3000
 kea_dhcp6_renew_timer: 1000
 kea_dhcp6_rebind_timer: 2000
+# Ranges a client may request in its IA options; null leaves them out.
+kea_dhcp6_min_valid_lifetime: null
+kea_dhcp6_max_valid_lifetime: null
+kea_dhcp6_min_preferred_lifetime: null
+kea_dhcp6_max_preferred_lifetime: null
 # DUID type the server uses for itself (LLT, EN or LL). Pin it in HA setups.
 kea_dhcp6_server_id: {}
 
@@ -102,6 +116,16 @@ kea_dhcp6_client_classes: []
 #       - hw-address: "aa:bb:cc:dd:ee:01"
 #         ip-address: 192.0.2.10
 #         hostname: printer01
+#   # Lease times of its own (seconds); unset keys use the globals above.
+#   - id: 2
+#     subnet: 198.51.100.0/24
+#     pools: [{ pool: 198.51.100.100 - 198.51.100.200 }]
+#     valid-lifetime: 86400
+#     min-valid-lifetime: 3600
+#     max-valid-lifetime: 172800
+#     renew-timer: 43200
+#     rebind-timer: 75600
+#     offer-lifetime: 60
 kea_dhcp4_subnets: []
 kea_dhcp4_shared_networks: []
 # Global (not subnet-scoped) reservations.
@@ -119,6 +143,18 @@ kea_dhcp4_reservations: []
 #         ip-addresses: ["2001:db8:1::10"]
 #       - hw-address: "aa:bb:cc:dd:ee:02"
 #         prefixes: ["2001:db8:8:100::/56"]
+#   # Lease times of its own (seconds); unset keys use the globals above.
+#   - id: 2
+#     subnet: 2001:db8:2::/64
+#     pools: [{ pool: 2001:db8:2::1000 - 2001:db8:2::1fff }]
+#     valid-lifetime: 86400
+#     preferred-lifetime: 43200
+#     min-valid-lifetime: 3600
+#     max-valid-lifetime: 172800
+#     min-preferred-lifetime: 1800
+#     max-preferred-lifetime: 86400
+#     renew-timer: 21600
+#     rebind-timer: 34560
 kea_dhcp6_subnets: []
 kea_dhcp6_shared_networks: []
 kea_dhcp6_reservations: []
@@ -279,6 +315,34 @@ kea_dhcp6_extra_hooks: []
 kea_ddns_extra_hooks: []
 
 # =============================================================================
+# Ping check (DHCPv4 address conflict detection)
+# =============================================================================
+# Before offering an address, kea-dhcp4 sends it ICMP echo requests. If
+# anything replies, Kea drops the offer, marks the address declined and
+# offers another. DHCPv4 only; hosts that drop ping are not detected.
+# The hook ships with ISC's packages (any EL) and AppStream's Kea 3.0 (EL10),
+# not with EPEL's Kea 2.6 (EL9) or 1.8 (EL8). Set kea_dhcp4_offer_lifetime
+# too, or every DHCPOFFER is checked again rather than only the first.
+kea_ping_check_enabled: false
+# Echo requests that must go unanswered before the address counts as free.
+kea_ping_check_min_ping_requests: 1
+# Milliseconds to wait for each reply.
+kea_ping_check_reply_timeout: 100
+# The lease's previous owner is checked again only after this many seconds
+# since its last transaction.
+kea_ping_check_cltt_secs: 60
+# Ping channel threads with multi-threading; 0 uses as many as Kea does.
+kea_ping_check_channel_threads: 0
+# Per subnet, the same parameters (except channel threads) go in the
+# subnet's user-context and override these, for example:
+#   - id: 3
+#     subnet: 203.0.113.0/24
+#     user-context: { min-ping-requests: 2, reply-timeout: 250 }
+#   - id: 4
+#     subnet: 198.18.0.0/24
+#     user-context: { enable-ping-check: false }
+
+# =============================================================================
 # phpIPAM reservation sync (optional)
 # =============================================================================
 # Installs a small service that reads addresses with a MAC from phpIPAM and
@@ -398,13 +462,16 @@ kea_hostname_char_replacement: "-"
 #   kea_ddns_dns_servers:
 #     - { ip-address: 192.0.2.53 }
 #     - { ip-address: 192.0.2.54 }
+#     - { ip-address: "2001:db8::53" }      # quote IPv6 addresses
 kea_ddns_dns_servers: []
 # Zones to update. dns-servers default to kea_ddns_dns_servers.
 #   kea_ddns_forward_domains:
-#     - { name: corp.example.com. }
+#     - { name: corp.example.com. }        # A and AAAA records
 #   kea_ddns_reverse_domains:
-#     - { name: 2.0.192.in-addr.arpa. }
-#     - { name: 8.b.d.0.1.0.0.2.ip6.arpa. }
+#     - { name: 2.0.192.in-addr.arpa. }    # 192.0.2.0/24
+#     - { name: 8.b.d.0.1.0.0.2.ip6.arpa. }    # 2001:db8::/32 (nibbles, reversed)
+#     - name: 0.0.0.0.0.0.0.0.8.b.d.0.1.0.0.2.ip6.arpa.    # 2001:db8::/64
+#       dns-servers: [{ ip-address: "2001:db8::54" }]
 kea_ddns_forward_domains: []
 kea_ddns_reverse_domains: []
 

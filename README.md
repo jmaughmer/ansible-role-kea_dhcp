@@ -4,7 +4,8 @@ Ansible role that installs and configures the [ISC Kea](https://www.isc.org/kea/
 
 Features:
 
-- DHCPv4 and DHCPv6 with subnets, shared networks, pools, prefix delegation and host reservations (global or per subnet).
+- DHCPv4 and DHCPv6 with subnets, shared networks, pools, prefix delegation and host reservations (global or per subnet). Lease times can be set globally or per subnet.
+- DHCPv4 address conflict detection: the ping check hook pings an address before offering it.
 - High availability clusters (hot-standby, load-balancing, passive-backup) using the HA hook, with a dedicated HA listener.
 - A REST API through the Kea Control Agent with HTTP basic auth and optional TLS. Reservations can be added and removed at run time with `host_cmds`, and an optional phpIPAM sync service is included.
 - Performance tuning: multi-threading sized for your lease backend, lease caching, reservation lookup tuning, kernel socket buffers and systemd limits.
@@ -59,6 +60,74 @@ Subnets, shared networks, reservations, options and client classes all use Kea's
 Every subnet needs a stable, unique `id`. The role checks this, because reservations in a database, HA and lease files all refer to the subnet by its id.
 
 Before installing a configuration file, the role validates it with `kea-<daemon> -t`.
+
+## Lease times
+
+The `kea_dhcp4_*` and `kea_dhcp6_*` lifetime variables set the server-wide defaults, in seconds. Any subnet or shared network can set its own with Kea's keys. A subnet inherits from its shared network, and both inherit from the globals, so set only what differs.
+
+| Variable (global) | Default | Per-subnet key |
+|---|---|---|
+| `kea_dhcp{4,6}_valid_lifetime` | `4000` | `valid-lifetime` |
+| `kea_dhcp{4,6}_renew_timer` / `_rebind_timer` | `1000` / `2000` | `renew-timer` / `rebind-timer` |
+| `kea_dhcp6_preferred_lifetime` | `3000` | `preferred-lifetime` |
+| `kea_dhcp{4,6}_min_valid_lifetime` / `_max_valid_lifetime` | unset | `min-valid-lifetime` / `max-valid-lifetime` |
+| `kea_dhcp6_min_preferred_lifetime` / `_max_preferred_lifetime` | unset | `min-preferred-lifetime` / `max-preferred-lifetime` |
+| `kea_dhcp4_offer_lifetime` | unset (0) | `offer-lifetime` |
+| `kea_calculate_tee_times` | `false` | `calculate-tee-times` |
+
+The min/max bounds limit what a client may ask for. Without them Kea always hands out `valid-lifetime`.
+
+```yaml
+kea_dhcp4_subnets:
+  - id: 1                      # office: a day
+    subnet: 10.0.10.0/24
+    pools: [{ pool: 10.0.10.100 - 10.0.10.250 }]
+    valid-lifetime: 86400
+    renew-timer: 43200
+    rebind-timer: 75600
+  - id: 2                      # guest Wi-Fi: an hour, clients may ask for 30 min to 2 h
+    subnet: 10.0.20.0/24
+    pools: [{ pool: 10.0.20.10 - 10.0.20.250 }]
+    valid-lifetime: 3600
+    min-valid-lifetime: 1800
+    max-valid-lifetime: 7200
+    calculate-tee-times: true  # T1/T2 at 50% / 87.5% of the lifetime granted
+
+kea_dhcp6_subnets:
+  - id: 1
+    subnet: "2001:db8:10::/64"
+    pools: [{ pool: "2001:db8:10::1000 - 2001:db8:10::1fff" }]
+    valid-lifetime: 86400
+    preferred-lifetime: 43200
+    renew-timer: 21600
+    rebind-timer: 34560
+```
+
+Kea refuses a configuration where `renew-timer` exceeds `rebind-timer`, or either exceeds `valid-lifetime`. The role's `kea-<daemon> -t` check catches this before anything is installed. In DHCPv6, `preferred-lifetime` should not exceed `valid-lifetime`.
+
+## Address conflict detection (ping check)
+
+With `kea_ping_check_enabled: true`, `kea-dhcp4` pings an address before offering it. If anything replies, Kea drops the offer, records the address as declined and offers another one. This catches devices that were given a static address inside a pool.
+
+```yaml
+kea_ping_check_enabled: true
+kea_dhcp4_offer_lifetime: 60     # hold offers, so only the first offer is pinged
+# kea_ping_check_min_ping_requests: 1
+# kea_ping_check_reply_timeout: 100   # ms per echo request
+kea_dhcp4_subnets:
+  - id: 3
+    subnet: 10.0.30.0/24       # a slow WAN segment: wait longer
+    user-context: { min-ping-requests: 2, reply-timeout: 250 }
+  - id: 4
+    subnet: 10.0.40.0/24       # high-churn segment: skip the check
+    user-context: { enable-ping-check: false }
+```
+
+- DHCPv4 only. For DHCPv6, clients run duplicate address detection themselves and send a DECLINE, which Kea already handles.
+- Hosts that drop ICMP echo (Windows' firewall does by default) are not detected.
+- Every offer waits up to `min-ping-requests × reply-timeout`, so ISC does not recommend it for high-throughput servers.
+- The hook ships with ISC's packages and with AppStream's Kea 3.0 on EL10, not with EPEL's Kea on EL8/EL9. The role fails early in that case.
+- Pinging needs `CAP_NET_RAW`. The packaged units already grant it, and the role's systemd drop-in adds it again for `kea-dhcp4`.
 
 ## DHCPv6
 
@@ -206,6 +275,23 @@ kea_ddns_reverse_domains: [{ name: 10.0.10.in-addr.arpa. }]
 # kea_ddns_conflict_resolution_mode: no-check-without-dhcid
 ```
 
+For DHCPv6 clients (with `kea_dhcp6_enabled: true`), the same forward zone gets AAAA records. Add an `ip6.arpa` zone for the PTRs; its name is the prefix's nibbles in reverse order. The DNS servers can be reached over IPv6 as well:
+
+```yaml
+kea_ddns_dns_servers:
+  - { ip-address: 10.0.0.53 }
+  - { ip-address: "2001:db8:10::53" }
+kea_ddns_reverse_domains:
+  - { name: 10.0.10.in-addr.arpa. }
+  - { name: 0.1.0.0.8.b.d.0.1.0.0.2.ip6.arpa. }   # 2001:db8:10::/48
+  # A zone can name its own servers instead of using kea_ddns_dns_servers:
+  - name: 0.0.0.0.0.2.0.0.8.b.d.0.1.0.0.2.ip6.arpa.   # 2001:db8:20::/64
+    dns-servers:
+      - { ip-address: "2001:db8:10::54" }
+```
+
+Quote IPv6 addresses in YAML. Unquoted, an all-digit address such as `2001:0:0:0:0:0:0:53` is read as a base-60 number, and one ending in `::` breaks a `{ }` mapping.
+
 **Zones set to "Nonsecure and secure"** work as shown above.
 
 **Zones set to "Secure only"**, the AD-integrated default, need GSS-TSIG:
@@ -225,6 +311,8 @@ kea_ddns_reverse_domains: [{ name: 10.0.10.in-addr.arpa. }]
    kea_ddns_gss_tsig_servers:
      - { id: dc1, ip-address: 10.0.0.53 }
      - { id: dc2, ip-address: 10.0.0.54 }
+     # or over IPv6:
+     # - { id: dc1-v6, ip-address: "2001:db8:10::53" }
    kea_krb5_manage: true
    kea_krb5_realm: CORP.EXAMPLE.COM
    ```
@@ -273,6 +361,7 @@ All variables, with comments, are in [`defaults/main.yml`](defaults/main.yml). T
 | `kea_ctrl_agent_enabled` | `true` |
 | `kea_ha_enabled` | `false` |
 | `kea_pxe_enabled` | `false` |
+| `kea_ping_check_enabled` | `false` |
 | `kea_phpipam_sync_enabled` | `false` |
 | `kea_firewalld_manage` / `kea_selinux_manage` / `kea_fapolicyd_manage` | `true` / `true` / `true` |
 | `kea_fips_required` | `false` |

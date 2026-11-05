@@ -41,5 +41,11 @@
 {% if kea_dhcp6_server_id | length > 0 %}
 {%   set cfg = cfg | combine({"server-id": kea_dhcp6_server_id}) %}
 {% endif %}
+{% set cfg = cfg | combine(m.optional_settings({
+  "min-valid-lifetime": kea_dhcp6_min_valid_lifetime,
+  "max-valid-lifetime": kea_dhcp6_max_valid_lifetime,
+  "min-preferred-lifetime": kea_dhcp6_min_preferred_lifetime,
+  "max-preferred-lifetime": kea_dhcp6_max_preferred_lifetime
+}) | from_json) %}
 {% set cfg = cfg | combine(m.ddns_globals() | from_json) | combine(kea_dhcp6_extra_config, recursive=true) %}
 {{ {"Dhcp6": cfg} | to_nice_json(indent=2) }}

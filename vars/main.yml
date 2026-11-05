@@ -58,6 +58,7 @@ __kea_hook_files:
   subnet_cmds: libdhcp_subnet_cmds.so
   ha: libdhcp_ha.so
   legal_log: libdhcp_legal_log.so
+  ping_check: libdhcp_ping_check.so
   mysql: libdhcp_mysql.so
   pgsql: libdhcp_pgsql.so
   gss_tsig: libddns_gss_tsig.so

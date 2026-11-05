@@ -1,6 +1,8 @@
 # {{ ansible_managed }}
 {% import '_macros.j2' as m with context %}
+{# Kea wants ping_check listed before lease_cmds. #}
 {% set hooks = (m.db_hooks([kea_dhcp4_lease_database, kea_dhcp4_hosts_database]) | from_json)
+             + (m.ping_check_hook() | from_json)
              + (m.cmd_hooks() | from_json)
              + (m.legal_log_hook(kea_legal_log_base_name_v4) | from_json)
              + (m.ha_hook(kea_ha_dhcp4_port) | from_json)
@@ -40,5 +42,10 @@
 {% if kea_dhcp4_hosts_database | length > 0 %}
 {%   set cfg = cfg | combine({"hosts-database": kea_dhcp4_hosts_database}) %}
 {% endif %}
+{% set cfg = cfg | combine(m.optional_settings({
+  "min-valid-lifetime": kea_dhcp4_min_valid_lifetime,
+  "max-valid-lifetime": kea_dhcp4_max_valid_lifetime,
+  "offer-lifetime": kea_dhcp4_offer_lifetime
+}) | from_json) %}
 {% set cfg = cfg | combine(m.ddns_globals() | from_json) | combine(kea_dhcp4_extra_config, recursive=true) %}
 {{ {"Dhcp4": cfg} | to_nice_json(indent=2) }}
