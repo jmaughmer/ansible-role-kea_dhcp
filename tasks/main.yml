@@ -11,13 +11,17 @@
   ansible.builtin.import_tasks: install.yml
   tags: [kea, kea_install]
 
+- name: Check that Kea's ports are free
+  ansible.builtin.import_tasks: ports.yml
+  tags: [kea, kea_ports]
+
 - name: Apply performance tuning
   ansible.builtin.import_tasks: tuning.yml
   tags: [kea, kea_tuning]
 
-- name: Initialise the host reservation database
+- name: Initialise the Kea databases
   ansible.builtin.include_tasks: database.yml
-  when: kea_db_init | bool and kea_hosts_database | length > 0
+  when: kea_db_init | bool and __kea_sql_databases | length > 0
   tags: [kea, kea_database]
 
 - name: Configure Kea

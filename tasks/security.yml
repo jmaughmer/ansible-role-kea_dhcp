@@ -45,6 +45,7 @@
       ansible.builtin.dnf:
         name:
           - policycoreutils-python-utils
+          - libselinux-utils
           - python3-libselinux
           - python3-policycoreutils
         state: present
@@ -64,12 +65,39 @@
       changed_when: false
       check_mode: false
 
-    - name: Pick the SELinux port type for the API and HA listeners
+    # RHEL's targeted policy has no Kea module: the binaries are bin_t and
+    # Kea runs unconfined, free to bind any port. Only a loaded Kea module
+    # (or an explicit kea_selinux_port_type) needs ports labelled.
+    - name: Look up the label of Kea's binaries
+      ansible.builtin.command: matchpathcon -n /usr/sbin/kea-dhcp4
+      register: __kea_exec_label
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Work out whether Kea runs in its own SELinux domain
       ansible.builtin.set_fact:
+        __kea_selinux_confined: "{{ (__kea_exec_label.stdout | default('')) is search(':kea[a-z0-9_]*_exec_t:') }}"
         __kea_selinux_port_type: >-
           {{ kea_selinux_port_type if kea_selinux_port_type | length > 0 else
              (__kea_semanage_ports.stdout_lines | map('split') | select | map('first')
-              | select('match', '^kea.*_port_t$') | first | default('http_port_t')) }}
+              | select('match', '^kea.*_port_t$') | first | default('')) }}
+
+    - name: Report that Kea runs unconfined
+      ansible.builtin.debug:
+        msg: >-
+          The loaded policy has no Kea module ({{ __kea_exec_label.stdout | default('?') }}),
+          so Kea runs as unconfined_service_t and its ports need no labels.
+      when: not __kea_selinux_confined | bool and kea_selinux_port_type | length == 0
+
+    - name: Assert a port type is known for the confined Kea domain
+      ansible.builtin.assert:
+        that: __kea_selinux_port_type | length > 0
+        fail_msg: >-
+          Kea runs in its own SELinux domain but the policy has no kea*_port_t type.
+          Set kea_selinux_port_type to the type that domain may bind.
+        quiet: true
+      when: __kea_selinux_confined | bool and __kea_selinux_ports | length > 0
 
     - name: Label the API and HA listener ports
       community.general.seport:
@@ -77,7 +105,9 @@
         proto: tcp
         setype: "{{ __kea_selinux_port_type }}"
         state: present
-      when: __kea_selinux_ports | length > 0
+      when:
+        - __kea_selinux_ports | length > 0
+        - __kea_selinux_confined | bool or kea_selinux_port_type | length > 0
       notify: Restart kea
 
     - name: Add file context equivalence for relocated Kea directories
@@ -129,10 +159,21 @@
         persistent: true
       loop: "{{ kea_selinux_booleans | dict2items }}"
 
+    - name: Assert there is a Kea domain to make permissive
+      ansible.builtin.assert:
+        that: __kea_selinux_confined | bool
+        fail_msg: >-
+          kea_selinux_permissive_domain needs a Kea policy module. Without one Kea
+          runs unconfined, so SELinux does not restrict it in the first place.
+        quiet: true
+      when: kea_selinux_permissive_domain | bool
+
     - name: Set the Kea domain permissive state
       ansible.builtin.command: >-
         semanage permissive {{ '-a' if kea_selinux_permissive_domain | bool else '-d' }} {{ kea_selinux_domain }}
       changed_when: true
-      when: >-
-        (kea_selinux_permissive_domain | bool) !=
-        (kea_selinux_domain in __kea_semanage_local.results[1].stdout.split())
+      when:
+        - __kea_selinux_confined | bool
+        - >-
+          (kea_selinux_permissive_domain | bool) !=
+          (kea_selinux_domain in __kea_semanage_local.results[1].stdout.split())

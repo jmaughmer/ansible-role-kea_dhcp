@@ -29,10 +29,16 @@ kea_extra_packages: []
 kea_dhcp4_enabled: true
 kea_dhcp6_enabled: false
 kea_ddns_enabled: false
-kea_ctrl_agent_enabled: true
+# The REST API (see "REST API" below). kea_ctrl_agent_enabled is the older
+# name and still works.
+kea_api_enabled: "{{ kea_ctrl_agent_enabled | default(true) }}"
 
 # Validate configuration files with "kea-<daemon> -t" before installing them.
 kea_validate_config: true
+
+# Before configuring anything, fail if a service other than Kea already
+# listens on a port Kea needs (API, HA listeners, DHCP, DDNS).
+kea_port_check: true
 
 # Kea runtime user/group. Auto-detected from the packages when left empty.
 kea_user: ""
@@ -42,15 +48,18 @@ kea_group: ""
 kea_config_dir: /etc/kea
 kea_lib_dir: /var/lib/kea
 kea_log_dir: /var/log/kea
-# Defaults differ per package source (see vars/); override only if needed.
+# Set in vars/; override only if needed.
 kea_socket_dir: "{{ __kea_socket_dir }}"
 kea_hooks_dir: "{{ __kea_hooks_dir }}"
 
 # =============================================================================
 # Interfaces
 # =============================================================================
-kea_dhcp4_interfaces: ["*"]
-kea_dhcp6_interfaces: ["*"]
+# Interfaces to serve, e.g. [ens192] or ["ens192/10.0.10.5"]. Required once
+# a family has subnets: "*" would answer on every interface, management
+# networks included, so the role does not assume it.
+kea_dhcp4_interfaces: []
+kea_dhcp6_interfaces: []
 # "raw" is required to serve directly connected clients. "udp" is faster and
 # is fine when every client is behind a relay (ip helper-address).
 kea_dhcp4_socket_type: raw
@@ -94,9 +103,25 @@ kea_dhcp6_max_preferred_lifetime: null
 # DUID type the server uses for itself (LLT, EN or LL). Pin it in HA setups.
 kea_dhcp6_server_id: {}
 
-# Global options, Kea "option-data" format.
-#   - { name: domain-name-servers, data: "192.0.2.53, 192.0.2.54" }
+# Global options, Kea "option-data" format. Subnets, shared networks and
+# reservations can carry their own "option-data", which overrides these.
+# kea_dhcp4_option_data:
+#   - { name: domain-name-servers, data: "192.0.2.53, 192.0.2.54" }   # option 6
+#   - { name: domain-name, data: corp.example.com }                   # option 15
+#   - { name: domain-search, data: "corp.example.com, example.com" }  # option 119
+#   - { name: ntp-servers, data: "192.0.2.123, 192.0.2.124" }         # option 42
+#   # The default gateway (routers, option 3) is per subnet: see below.
 kea_dhcp4_option_data: []
+# DHCPv6 has no gateway or domain-name option. Clients learn the default
+# route from router advertisements, and take their DNS suffix from
+# domain-search.
+# kea_dhcp6_option_data:
+#   - { name: dns-servers, data: "2001:db8::53, 2001:db8::54" }       # option 23
+#   - { name: domain-search, data: "corp.example.com, example.com" }  # option 24
+#   - { name: sntp-servers, data: "2001:db8::123, 2001:db8::124" }   # option 31
+#   # Option 56 (RFC 5908): a container that holds one NTP suboption.
+#   - { name: ntp-server }
+#   - { name: ntp-server-address, space: v6-ntp-server-suboptions, data: "2001:db8::123" }
 kea_dhcp6_option_data: []
 # Custom option definitions, Kea "option-def" format.
 kea_dhcp4_option_def: []
@@ -118,7 +143,10 @@ kea_dhcp6_client_classes: []
 #     subnet: 192.0.2.0/24
 #     pools: [{ pool: 192.0.2.100 - 192.0.2.200 }]
 #     option-data:
-#       - { name: routers, data: 192.0.2.1 }
+#       - { name: routers, data: 192.0.2.1 }                       # default gateway
+#       - { name: domain-name-servers, data: "192.0.2.53, 192.0.2.54" }
+#       - { name: domain-name, data: site1.corp.example.com }
+#       - { name: domain-search, data: "site1.corp.example.com, corp.example.com" }
 #     reservations:
 #       - hw-address: "aa:bb:cc:dd:ee:01"
 #         ip-address: 192.0.2.10
@@ -145,6 +173,10 @@ kea_dhcp4_reservations: []
 #     pools: [{ pool: 2001:db8:1::1000 - 2001:db8:1::1fff }]
 #     pd-pools:
 #       - { prefix: "2001:db8:8::", prefix-len: 56, delegated-len: 64 }
+#     # No gateway option: the router's advertisements supply the default route.
+#     option-data:
+#       - { name: dns-servers, data: "2001:db8:1::53, 2001:db8:1::54" }
+#       - { name: domain-search, data: "site1.corp.example.com, corp.example.com" }
 #     reservations:
 #       - duid: "01:02:03:04:05:0a:0b:0c:0d:0e"
 #         ip-addresses: ["2001:db8:1::10"]
@@ -203,8 +235,9 @@ kea_hosts_database: {}
 kea_dhcp4_hosts_database: "{{ kea_hosts_database }}"
 kea_dhcp6_hosts_database: "{{ kea_hosts_database }}"
 
-# Initialise the schema of kea_hosts_database with kea-admin (run once, from
-# the first host of the play). The database and user must already exist.
+# Create or upgrade the schema of every MySQL / PostgreSQL database Kea uses
+# (lease and hosts databases, both families) with kea-admin, once per
+# database from the first host of the play. Databases and users must exist.
 kea_db_init: false
 
 # =============================================================================
@@ -284,9 +317,24 @@ kea_legal_log_base_name_v6: kea-legal6
 kea_legal_log_parameters: {}
 
 # =============================================================================
-# Control Agent / REST API
+# REST API
 # =============================================================================
-kea_ctrl_agent_host: 127.0.0.1
+# Where the API is served from:
+#   auto        Kea 2.7.2 and newer (ISC's packages, AppStream on EL10): each
+#               daemon serves the API on its own port, and kea-ctrl-agent
+#               (deprecated by ISC) is stopped. Older Kea (EPEL on EL8/EL9),
+#               or HA without a dedicated listener, uses kea-ctrl-agent.
+#   daemon      always the daemons' own HTTP sockets (needs Kea 2.7.2+).
+#   ctrl_agent  always kea-ctrl-agent on kea_ctrl_agent_port.
+kea_api_mode: auto
+# Address the API listens on, either way (kea_ctrl_agent_host is the older
+# name and still works).
+kea_api_host: "{{ kea_ctrl_agent_host | default('127.0.0.1') }}"
+# Ports of the daemons' own HTTP sockets (auto and daemon modes).
+kea_api_dhcp4_port: 8004
+kea_api_dhcp6_port: 8006
+kea_api_ddns_port: 8053
+# kea-ctrl-agent's port (ctrl_agent mode, or auto on older Kea).
 kea_ctrl_agent_port: 8000
 # HTTP basic authentication. Strongly recommended whenever the API is
 # reachable from the network. Passwords are written to files in
@@ -296,16 +344,21 @@ kea_ctrl_agent_port: 8000
 #     - { user: phpipam, password: "{{ vault_kea_api_phpipam_password }}" }
 kea_api_users: []
 kea_api_auth_realm: kea-api
-# Optional TLS for the API.
-kea_ctrl_agent_tls_enabled: false
-kea_ctrl_agent_tls_cert_file: "{{ kea_config_dir }}/tls/kea.crt"
-kea_ctrl_agent_tls_key_file: "{{ kea_config_dir }}/tls/kea.key"
-kea_ctrl_agent_tls_ca_file: "{{ kea_config_dir }}/tls/ca.crt"
-kea_ctrl_agent_tls_cert_required: false
+# The role refuses an API on a non-loopback kea_api_host without
+# kea_api_users, since anyone who reaches it could reconfigure or stop Kea.
+# Set this only if something else (a firewall, a VPN) already guards it.
+kea_api_allow_unauthenticated: false
+# Optional TLS (HTTPS) for the API. The kea_ctrl_agent_tls_* names used by
+# earlier releases still work.
+kea_api_tls_enabled: "{{ kea_ctrl_agent_tls_enabled | default(false) }}"
+kea_api_tls_cert_file: "{{ kea_ctrl_agent_tls_cert_file | default(kea_config_dir ~ '/tls/kea.crt') }}"
+kea_api_tls_key_file: "{{ kea_ctrl_agent_tls_key_file | default(kea_config_dir ~ '/tls/kea.key') }}"
+kea_api_tls_ca_file: "{{ kea_ctrl_agent_tls_ca_file | default(kea_config_dir ~ '/tls/ca.crt') }}"
+kea_api_tls_cert_required: "{{ kea_ctrl_agent_tls_cert_required | default(false) }}"
 # Optional PEM content to deploy to the paths above (vault these).
-kea_ctrl_agent_tls_cert_content: ""
-kea_ctrl_agent_tls_key_content: ""
-kea_ctrl_agent_tls_ca_content: ""
+kea_api_tls_cert_content: "{{ kea_ctrl_agent_tls_cert_content | default('') }}"
+kea_api_tls_key_content: "{{ kea_ctrl_agent_tls_key_content | default('') }}"
+kea_api_tls_ca_content: "{{ kea_ctrl_agent_tls_ca_content | default('') }}"
 
 # Load the hooks that make up the management API.
 kea_hook_lease_cmds: true
@@ -360,15 +413,34 @@ kea_phpipam_sync_enabled: false
 kea_phpipam_url: https://phpipam.example.com
 kea_phpipam_app_id: kea
 kea_phpipam_token: ""
+# TLS checks for phpIPAM's certificate; a CA file for a private CA.
 kea_phpipam_verify_tls: true
+kea_phpipam_ca_file: ""
 # Map phpIPAM subnet IDs to Kea subnet IDs.
 #   - { phpipam_subnet_id: 7, kea_subnet_id: 1, family: 4 }
 kea_phpipam_subnet_map: []
-kea_phpipam_api_url: "http://{{ kea_ctrl_agent_host }}:{{ kea_ctrl_agent_port }}/"
+# Kea API URL per service. Empty works it out from the API settings above
+# (a daemon's own port, or kea-ctrl-agent's).
+#   { dhcp4: "https://kea1.example.com:8004/", dhcp6: "https://kea1.example.com:8006/" }
+kea_phpipam_api_urls: {}
 kea_phpipam_api_user: "{{ (kea_api_users | first).user if kea_api_users | length > 0 else '' }}"
 kea_phpipam_api_password: "{{ (kea_api_users | first).password if kea_api_users | length > 0 else '' }}"
+# TLS towards the Kea API (kea_api_tls_enabled). The CA defaults to the API's
+# own; the client certificate is sent when the API requires one
+# (kea_api_tls_cert_required), and defaults to the server's certificate, which
+# then needs the clientAuth extended key usage (or none at all).
+kea_phpipam_api_verify_tls: true
+kea_phpipam_api_ca_file: "{{ kea_api_tls_ca_file if kea_api_tls_enabled | bool else '' }}"
+kea_phpipam_api_cert_file: "{{ kea_api_tls_cert_file if kea_api_tls_enabled | bool and kea_api_tls_cert_required | bool else '' }}"
+kea_phpipam_api_key_file: "{{ kea_api_tls_key_file if kea_api_tls_enabled | bool and kea_api_tls_cert_required | bool else '' }}"
 # Remove Kea reservations in mapped subnets that no longer exist in phpIPAM.
 kea_phpipam_delete_missing: true
+# Safety nets for deletion. A subnet phpIPAM does not know is always an error.
+# When phpIPAM returns no addresses at all for a subnet, the sync will not
+# empty the Kea subnet unless this is true.
+kea_phpipam_allow_empty_source: false
+# Most reservations one run may remove from a subnet; 0 means no limit.
+kea_phpipam_max_deletes: 0
 # systemd OnCalendar / OnUnitActiveSec interval.
 kea_phpipam_sync_interval: 5min
 
@@ -405,9 +477,28 @@ kea_ha_dhcp4_port: 8001
 kea_ha_dhcp6_port: 8002
 kea_ha_listener_threads: 0
 kea_ha_client_threads: 0
-# Basic auth used when talking to peers (matches one of their kea_api_users).
+# Basic auth the HA client sends to its peers. kea-ctrl-agent checks it (HA
+# without a dedicated listener, against kea_api_users); the dedicated listener
+# does not authenticate requests, so protect it with TLS client certificates
+# (below) and the firewall (kea_firewalld_ha_restrict_to_peers).
 kea_ha_basic_auth_user: ""
 kea_ha_basic_auth_password: ""
+# HTTPS between HA peers: lease updates carry MAC addresses and host names.
+# Each node uses its own certificate for both its listener and its client
+# connections, so give it serverAuth and clientAuth extended key usage and
+# the node's IP address as a subjectAltName. The files default to the API's.
+# Without a dedicated listener, peers reach kea-ctrl-agent, so this must then
+# match kea_api_tls_enabled.
+kea_ha_tls_enabled: false
+kea_ha_tls_cert_file: "{{ kea_api_tls_cert_file }}"
+kea_ha_tls_key_file: "{{ kea_api_tls_key_file }}"
+kea_ha_tls_ca_file: "{{ kea_api_tls_ca_file }}"
+# PEM content to deploy to those paths when they differ from the API's.
+kea_ha_tls_cert_content: ""
+kea_ha_tls_key_content: ""
+kea_ha_tls_ca_content: ""
+# The listener rejects peers without a certificate signed by the CA.
+kea_ha_tls_require_client_certs: true
 # Extra parameters merged into each high-availability relationship.
 kea_ha_extra_parameters: {}
 
@@ -516,16 +607,26 @@ kea_krb5_kdcs: []
 # =============================================================================
 kea_firewalld_manage: true
 kea_firewalld_zone: public
-# Open the API port in the firewall (HA via Control Agent / remote clients).
-kea_firewalld_open_api: "{{ kea_ctrl_agent_host not in ['127.0.0.1', '::1', 'localhost'] }}"
+# Open the API ports to the whole zone (for remote API clients).
+kea_firewalld_open_api: "{{ kea_api_host not in ['127.0.0.1', '::1', 'localhost'] }}"
+# Accept HA traffic only from the addresses in kea_ha_peers (rich rules),
+# rather than opening the HA ports to the whole zone.
+kea_firewalld_ha_restrict_to_peers: true
+# Close ports and remove rules the role opened earlier but no longer needs,
+# e.g. kea-ctrl-agent's port after the API moves to the daemons, or a former
+# HA peer's rule.
+kea_firewalld_remove_stale: true
 
 # =============================================================================
 # SELinux
 # =============================================================================
 # Only acts when SELinux is enabled; the mode is never changed.
 kea_selinux_manage: true
-# Type used to label the API and HA listener ports. Empty = auto: a kea port
-# type from the loaded policy if there is one, otherwise http_port_t.
+# RHEL's targeted policy (8, 9 and 10) has no Kea module: Kea runs as
+# unconfined_service_t, may bind any port, and the role leaves port labels
+# alone. When a Kea policy module is loaded (Kea's binaries are no longer
+# bin_t), the role labels the API and HA ports with this type; empty picks a
+# kea*_port_t type from the policy. Setting it forces labelling either way.
 kea_selinux_port_type: ""
 # Restore file contexts on Kea's directories (and add equivalence rules
 # when they are moved away from the default locations).
@@ -535,9 +636,10 @@ kea_selinux_booleans: {}
 # Extra file contexts, community.general.sefcontext style:
 #   - { target: "/srv/kea(/.*)?", setype: kea_var_lib_t }
 kea_selinux_fcontexts: []
-# Troubleshooting only: run the confined Kea domain in permissive mode while
-# the rest of the system stays enforcing. Collect AVCs with
-# "ausearch -m AVC -c kea" and build a local module before turning it off.
+# Troubleshooting only, and only with a Kea policy module loaded: run the
+# confined Kea domain in permissive mode while the rest of the system stays
+# enforcing. Collect AVCs with "ausearch -m AVC -c kea" and build a local
+# module before turning it off.
 kea_selinux_permissive_domain: false
 kea_selinux_domain: kea_t
 

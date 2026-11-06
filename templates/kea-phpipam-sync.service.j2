@@ -1,7 +1,7 @@
 # {{ ansible_managed }}
 [Unit]
 Description=Sync phpIPAM addresses into Kea reservations
-After=network-online.target {{ __kea_source.ctrl_agent_service }}.service
+After=network-online.target {{ __kea_enabled_services | map("regex_replace", "$", ".service") | join(" ") }}
 Wants=network-online.target
 
 [Service]

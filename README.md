@@ -6,20 +6,25 @@ Features:
 
 - DHCPv4 and DHCPv6 with subnets, shared networks, pools, prefix delegation and host reservations (global or per subnet). Lease times can be set globally or per subnet.
 - DHCPv4 address conflict detection: the ping check hook pings an address before offering it.
-- High availability clusters (hot-standby, load-balancing, passive-backup) using the HA hook, with a dedicated HA listener.
-- A REST API through the Kea Control Agent with HTTP basic auth and optional TLS. Reservations can be added and removed at run time with `host_cmds`, and an optional phpIPAM sync service is included.
+- High availability clusters (hot-standby, load-balancing, passive-backup) using the HA hook, with a dedicated HA listener, HTTPS with client certificates between peers, and firewall rules that admit only the peers.
+- A REST API with HTTP basic auth and optional TLS, served by the Kea daemons themselves on Kea 2.7.2+ or by the Control Agent on older Kea. Reservations can be added and removed at run time with `host_cmds`, and an optional phpIPAM sync service is included.
 - Performance tuning: multi-threading sized for your lease backend, lease caching, reservation lookup tuning, kernel socket buffers and systemd limits.
 - PXE / network boot for BIOS, UEFI (x86, x64, ARM64), UEFI HTTP boot, iPXE chainloading and DHCPv6 boot URLs.
 - Dynamic DNS via `kea-dhcp-ddns`, aimed at Microsoft DNS. Secure-only zones work through GSS-TSIG (Kerberos).
 - Logging options: file, syslog or stdout, with severity, rotation, extra loggers and forensic lease logging.
 - SELinux port and file labeling, a fapolicyd trust file for non-RPM files, and FIPS checks (TSIG algorithms, crypto policy for AD Kerberos).
-- Molecule tests with podman: a single server on EL8, EL9 and EL10, plus a two-node HA cluster with a failover test.
+- Configuration changes are applied with a reload, so Kea keeps its leases in memory and HA keeps its state. Only package, systemd and certificate changes restart Kea.
+- Molecule tests with podman. They cover:
+  - a single server on EL8, EL9 and EL10, with Kea from ISC or AppStream
+  - two-node HA clusters in every mode, with failover
+  - the move from kea-ctrl-agent to the daemons' API
+  - MariaDB databases, the API over HTTPS, and the phpIPAM sync
 
 ## Requirements
 
-- Ansible core 2.15 or newer. RHEL 8 targets need ansible-core 2.16 or older on the controller, because 2.17+ no longer supports EL8's Python 3.6, which is where the dnf bindings live.
+- Ansible core 2.15 or newer. RHEL 8 targets need ansible-core 2.16 or older on the controller, because 2.17+ no longer supports EL8's Python 3.6, which is where the dnf bindings live. Both 2.15 and 2.16 are end-of-life upstream, so keep a separate, pinned controller environment for EL8 hosts and use a supported release for the rest.
 - Collections from `requirements.yml`: `ansible.posix` and `community.general`.
-- Managed hosts need access to the package repositories: ISC's Cloudsmith repository by default (or a local mirror), plus EPEL, which provides `log4cplus` for the ISC packages. The role enables EPEL unless `kea_epel_manage: false`.
+- Managed hosts need access to the package repositories: ISC's Cloudsmith repository by default (or a local mirror), plus EPEL, which provides `log4cplus` for the ISC packages. The role enables EPEL unless `kea_epel_manage: false`. With `kea_install_source: distro` on EL10, everything comes from AppStream and EPEL is not needed.
 
 ```bash
 ansible-galaxy collection install -r requirements.yml
@@ -30,7 +35,7 @@ ansible-galaxy collection install -r requirements.yml
 | `kea_install_source` | Repository | Notes |
 |---|---|---|
 | `isc` (default) | ISC Cloudsmith, `kea_isc_repo_series: "3-0"` | Kea 3.x. From 3.0, every hook (HA, host_cmds, GSS-TSIG, legal log) is open source and ships in `isc-kea-hooks`. |
-| `distro` | EPEL (EL8/9), AppStream (EL10) | An older Kea without `host_cmds` or GSS-TSIG. Set `kea_hook_host_cmds: false`. |
+| `distro` | EPEL (EL8/9), AppStream (EL10) | EL10: AppStream's Kea 3.0, with every hook in `kea-hooks`. EL8/EL9: EPEL's Kea 1.8 / 2.6, without `host_cmds`, GSS-TSIG or ping check, so set `kea_hook_host_cmds: false`, and the API stays on kea-ctrl-agent. |
 
 If you mirror the repository (Satellite, Pulp, Artifactory), set `kea_manage_repo: false`.
 
@@ -43,23 +48,47 @@ If you mirror the repository (Satellite, Pulp, Artifactory), set `kea_manage_rep
     - role: ansible-role-kea_dhcp
       vars:
         kea_dhcp4_interfaces: [ens192]
+        # Global options, sent to every subnet unless the subnet sets its own.
         kea_dhcp4_option_data:
           - { name: domain-name-servers, data: "10.0.0.53, 10.0.0.54" }
           - { name: domain-name, data: corp.example.com }
+          - { name: domain-search, data: "corp.example.com, example.com" }
         kea_dhcp4_subnets:
           - id: 1
             subnet: 10.0.10.0/24
             pools: [{ pool: 10.0.10.100 - 10.0.10.250 }]
-            option-data: [{ name: routers, data: 10.0.10.1 }]
+            option-data:
+              - { name: routers, data: 10.0.10.1 }     # default gateway
             reservations:
               - { hw-address: "aa:bb:cc:dd:ee:01", ip-address: 10.0.10.10, hostname: printer01 }
+          - id: 2
+            subnet: 10.0.20.0/24                      # a site with its own DNS and suffix
+            pools: [{ pool: 10.0.20.100 - 10.0.20.250 }]
+            option-data:
+              - { name: routers, data: 10.0.20.1 }
+              - { name: domain-name-servers, data: "10.0.20.53, 10.0.0.53" }
+              - { name: domain-name, data: site2.corp.example.com }
+              - { name: domain-search, data: "site2.corp.example.com, corp.example.com" }
 ```
+
+| Setting | DHCPv4 option | DHCPv6 option |
+|---|---|---|
+| Default gateway | `routers` (3), comma-separated, preferred first | none, see [DHCPv6](#dhcpv6) |
+| DNS servers | `domain-name-servers` (6) | `dns-servers` (23) |
+| Domain name | `domain-name` (15), a single name | none, use `domain-search` |
+| Search list | `domain-search` (119), comma-separated | `domain-search` (24) |
+
+Options set in a subnet replace the global option of the same name; they are not merged. Kea checks the most specific level first: reservation, then pool, subnet, shared network, client class and global. Some clients, older Windows releases among them, ignore `domain-search` (option 119), so set `domain-name` as well.
 
 Subnets, shared networks, reservations, options and client classes all use Kea's own JSON schema, written as YAML. Anything in the [Kea ARM](https://kea.readthedocs.io/) can be expressed there. For global settings the role does not model, use `kea_dhcp4_extra_config` (and the `dhcp6`, `ddns` and `ctrl_agent` equivalents), which are merged recursively into the generated configuration.
 
+Set `kea_dhcp4_interfaces` / `kea_dhcp6_interfaces` for every family that has subnets. The role does not default to `"*"`, because Kea would then answer on every interface, management networks included. Relayed-only servers still list the interface the relayed traffic arrives on.
+
 Every subnet needs a stable, unique `id`. The role checks this, because reservations in a database, HA and lease files all refer to the subnet by its id.
 
-Before installing a configuration file, the role validates it with `kea-<daemon> -t`.
+Before installing a configuration file, the role validates it with `kea-<daemon> -t`. The configuration files can contain database passwords and TSIG secrets, so those tasks never print a diff, even under `--diff`.
+
+Before it configures, labels or opens any port, the role runs `ss` to check that no other service already listens on one Kea needs. That covers the API ports, the HA listeners, UDP 67/547 and the DDNS port. If another service holds one, the role fails and names the process. Kea's own listeners don't count, so re-runs and the move from kea-ctrl-agent to the daemon sockets go through. It also fails if two of the role's port variables are set to the same port. Set `kea_port_check: false` to skip the check.
 
 ## Lease times
 
@@ -150,11 +179,46 @@ kea_dhcp4_subnets:
 
 This setting is DHCPv4 only. For a DHCPv6 client on the wrong link, Kea already answers with a NotOnLink status.
 
+## NTP servers
+
+NTP servers are handed out as ordinary options, either globally or per subnet or shared network. A subnet's list replaces the global one.
+
+| Family | Option | Kea name | Value |
+|---|---|---|---|
+| DHCPv4 | 42 | `ntp-servers` | comma-separated IPv4 addresses |
+| DHCPv6 | 31 | `sntp-servers` | comma-separated IPv6 addresses |
+| DHCPv6 | 56 | `ntp-server` | a container that holds one suboption: `ntp-server-address`, `ntp-server-multicast` or `ntp-server-fqdn` |
+
+```yaml
+kea_dhcp4_option_data:
+  - { name: ntp-servers, data: "10.0.0.123, 10.0.0.124" }
+kea_dhcp4_subnets:
+  - id: 2
+    subnet: 10.0.20.0/24       # a branch office with its own time source
+    option-data:
+      - { name: routers, data: 10.0.20.1 }
+      - { name: ntp-servers, data: 10.0.20.1 }
+
+kea_dhcp6_option_data:
+  - { name: sntp-servers, data: "2001:db8::123, 2001:db8::124" }
+  # Option 56 (RFC 5908). List the container, then its suboption.
+  - { name: ntp-server }
+  - { name: ntp-server-address, space: v6-ntp-server-suboptions, data: "2001:db8::123" }
+```
+
+- Use option 42, not `time-servers` (option 4). Option 4 is the RFC 868 Time protocol, which NTP clients do not use.
+- RFC 5908 permits one suboption per option 56 instance, so the role's option-data can publish only one address or FQDN that way. For more than one server, use `sntp-servers`, which most DHCPv6 clients request anyway (NetworkManager, systemd-networkd, dhcpcd).
+- Kea sends these options only when the client asks for them. To send them regardless, add `always-send: true` to the entry.
+- Clients have to use what they receive. On RHEL, NetworkManager passes the DHCP NTP servers to chronyd through `/run/chrony-dhcp` (the `sourcedir` line in `chrony.conf`). Windows ignores option 42 by default, and domain members take their time from the domain hierarchy.
+
 ## DHCPv6
 
 ```yaml
 kea_dhcp6_enabled: true
 kea_dhcp6_interfaces: [ens192]
+kea_dhcp6_option_data:
+  - { name: dns-servers, data: "2001:db8::53, 2001:db8::54" }
+  - { name: domain-search, data: "corp.example.com, example.com" }
 kea_dhcp6_subnets:
   - id: 1
     subnet: 2001:db8:10::/64
@@ -162,6 +226,9 @@ kea_dhcp6_subnets:
     pools: [{ pool: 2001:db8:10::1000 - 2001:db8:10::ffff }]
     pd-pools:
       - { prefix: "2001:db8:80::", prefix-len: 48, delegated-len: 56 }
+    option-data:                 # replaces the global lists for this subnet
+      - { name: dns-servers, data: "2001:db8:10::53, 2001:db8::53" }
+      - { name: domain-search, data: "site1.corp.example.com, corp.example.com" }
     reservations:
       - duid: "00:03:00:01:aa:bb:cc:dd:ee:02"
         ip-addresses: ["2001:db8:10::10"]
@@ -170,6 +237,8 @@ kea_dhcp6_subnets:
 # Pin the server DUID so it survives reinstalls (and is stable in HA pairs).
 kea_dhcp6_server_id: { type: LLT, htype: 1, identifier: "aabbccddeeff", time: 0 }
 ```
+
+DHCPv6 cannot hand out a default gateway. Hosts learn their default route from the router advertisements (RAs) on the link. For clients to ask Kea for addresses at all, the router's RAs need the M (managed) flag, and the O (other configuration) flag if clients should fetch only DNS and other options. There is no domain-name option either. The `domain-search` list takes its place.
 
 ## High availability
 
@@ -185,27 +254,75 @@ kea_ha_peers:
 kea_dhcp6_enabled: true           # both families get their own HA relationship
 ```
 
-- By default each DHCP daemon runs a dedicated HTTP listener for HA traffic: DHCPv4 on `kea_ha_dhcp4_port` (8001) and DHCPv6 on `kea_ha_dhcp6_port` (8002). The role opens these ports in firewalld and labels them for SELinux.
-- If you set `kea_ha_dedicated_listener: false`, peers talk through the Control Agent instead. `kea_ctrl_agent_host` must then be an address the peers can reach.
+- By default each DHCP daemon runs a dedicated HTTP listener for HA traffic: DHCPv4 on `kea_ha_dhcp4_port` (8001) and DHCPv6 on `kea_ha_dhcp6_port` (8002). firewalld accepts those ports only from the addresses in `kea_ha_peers`, through rich rules. Set `kea_firewalld_ha_restrict_to_peers: false` to open them to the whole zone.
+- If you set `kea_ha_dedicated_listener: false`, peers talk through kea-ctrl-agent instead, so the role keeps running it even on Kea 3.x. `kea_api_host` must then be an address the peers can reach.
 - In `load-balancing` mode, split each pool between the servers with the `HA_<server-name>` classes, for example `client-class: HA_kea1`. See the Kea ARM, "Load-Balancing Configuration".
-- To authenticate HA requests, set `kea_ha_basic_auth_user` and `kea_ha_basic_auth_password` (use vault).
+- Lease updates between peers carry MAC addresses and host names, so turn on HTTPS. Each node needs a certificate signed by a CA all peers trust, with the node's IP address as a subjectAltName and both `serverAuth` and `clientAuth` extended key usage. The node uses it for its own listener and for its connections to the partner. With `kea_ha_tls_require_client_certs` (the default), the listener refuses any peer without such a certificate:
+  ```yaml
+  kea_ha_tls_enabled: true
+  kea_ha_tls_cert_content: "{{ vault_kea_ha_cert }}"    # this node's certificate
+  kea_ha_tls_key_content: "{{ vault_kea_ha_key }}"
+  kea_ha_tls_ca_content: "{{ vault_ca }}"
+  ```
+  The files default to the API's (`kea_api_tls_*_file`), so one certificate can serve both. Without a dedicated listener, peers connect to kea-ctrl-agent, so `kea_ha_tls_enabled` must then equal `kea_api_tls_enabled`.
+- `kea_ha_basic_auth_user` and `kea_ha_basic_auth_password` make the HA client send credentials. Only kea-ctrl-agent checks them, which happens without a dedicated listener. The dedicated listener does not authenticate requests, so protect it with client certificates and the peer-only firewall rules above.
 - Timers (`kea_ha_heartbeat_delay`, `kea_ha_max_response_delay`, `kea_ha_max_unacked_clients`, ...) map one to one to the HA hook parameters. Use `kea_ha_extra_parameters` for anything else.
 
 When reservations live in a shared hosts database, every node sees changes made through the API at once. When reservations come from the inventory, the role writes the same configuration to every node.
 
-## API and run-time reservations (phpIPAM and others)
-
-The Control Agent listens on `kea_ctrl_agent_host:kea_ctrl_agent_port` (default `127.0.0.1:8000`). By default the role loads the `lease_cmds`, `host_cmds` and `stat_cmds` hooks.
+Run plays against a cluster with `serial: 1`, so one node at a time changes (see [Operations](#operations)). The playbook below runs the HA pair one node at a time and lets the pair settle before moving on:
 
 ```yaml
-kea_ctrl_agent_host: 10.0.0.11
+- hosts: dhcp_servers
+  become: true
+  serial: 1
+  roles:
+    - ansible-role-kea_dhcp
+  post_tasks:
+    - name: Wait for HA to settle
+      ansible.builtin.uri:
+        url: http://127.0.0.1:8004/
+        method: POST
+        body_format: json
+        body: { command: ha-heartbeat }
+        url_username: admin
+        url_password: "{{ vault_kea_admin_password }}"
+        force_basic_auth: true
+      register: hb
+      until: hb.json[0].arguments.state | default('') in ['hot-standby', 'load-balancing', 'passive-backup']
+      retries: 30
+      delay: 5
+```
+
+## API and run-time reservations (phpIPAM and others)
+
+Since Kea 2.7.2, each daemon can serve the REST API itself, and ISC has deprecated kea-ctrl-agent (it logs a deprecation warning at startup). `kea_api_mode` picks where the API lives:
+
+| `kea_api_mode` | API endpoints | kea-ctrl-agent |
+|---|---|---|
+| `auto` (default) | On Kea 2.7.2+ (ISC's 3.x packages, AppStream on EL10): one port per daemon. On older Kea (EPEL on EL8/EL9): `:8000`. | Stopped and disabled on 2.7.2+. It keeps running on older Kea, and for HA without a dedicated listener. |
+| `daemon` | One port per daemon. The role fails on Kea older than 2.7.2. | Stopped and disabled |
+| `ctrl_agent` | `kea_api_host:kea_ctrl_agent_port` (`:8000`) for every service | Running |
+
+The daemons listen on `kea_api_host` (default `127.0.0.1`):
+
+| Daemon | Port variable | Default |
+|---|---|---|
+| `kea-dhcp4` | `kea_api_dhcp4_port` | `8004` |
+| `kea-dhcp6` | `kea_api_dhcp6_port` | `8006` |
+| `kea-dhcp-ddns` | `kea_api_ddns_port` | `8053` |
+
+Authentication, TLS and the firewall rules are the same in every mode. A daemon accepts and ignores the `service` parameter, so a client that sends `"service": ["dhcp4"]` only needs its URL changed when moving off kea-ctrl-agent. Each daemon still has its local UNIX control socket too. By default the role loads the `lease_cmds`, `host_cmds` and `stat_cmds` hooks.
+
+```yaml
+kea_api_host: 10.0.0.11
 kea_api_users:
   - { user: admin, password: "{{ vault_kea_admin_password }}" }
   - { user: phpipam, password: "{{ vault_kea_phpipam_password }}" }
-kea_ctrl_agent_tls_enabled: true          # optional
-kea_ctrl_agent_tls_cert_content: "{{ vault_kea_cert }}"
-kea_ctrl_agent_tls_key_content: "{{ vault_kea_key }}"
-kea_ctrl_agent_tls_ca_content: "{{ vault_ca }}"
+kea_api_tls_enabled: true          # optional: HTTPS
+kea_api_tls_cert_content: "{{ vault_kea_cert }}"
+kea_api_tls_key_content: "{{ vault_kea_key }}"
+kea_api_tls_ca_content: "{{ vault_ca }}"
 
 # Reservations added through the API are stored in a hosts database.
 kea_hosts_database:
@@ -217,15 +334,19 @@ kea_hosts_database:
 kea_db_init: true            # run kea-admin db-init / db-upgrade once
 ```
 
-Passwords are written to files in `/etc/kea` (mode 0640) and referenced with `password-file`, so they never appear in the Kea configuration.
+API passwords are written to files in `/etc/kea` (mode 0640) and referenced with `password-file`, so they never appear in the Kea configuration. Database passwords (`kea_hosts_database.password`, SQL lease databases) and TSIG secrets are written into the configuration files, which are mode 0640 and owned by root and the Kea group.
+
+When `kea_api_host` is not a loopback address, the role requires `kea_api_users`. Anyone who can reach an unauthenticated API can reconfigure or stop Kea. If a firewall or VPN already guards the port, set `kea_api_allow_unauthenticated: true`.
+
+With `kea_api_tls_cert_required: true`, clients must also present a certificate signed by `kea_api_tls_ca_file`.
 
 `reservation-add` and `reservation-del` need a hosts database. Reservations written in the configuration file are read-only through the API.
 
 Example call from any application:
 
 ```bash
-curl -su phpipam:secret -H 'Content-Type: application/json' http://10.0.0.11:8000/ -d '{
-  "command": "reservation-add", "service": ["dhcp4"],
+curl -su phpipam:secret -H 'Content-Type: application/json' http://10.0.0.11:8004/ -d '{
+  "command": "reservation-add",
   "arguments": {"reservation": {"subnet-id": 1, "hw-address": "aa:bb:cc:dd:ee:10",
                                 "ip-address": "10.0.10.20", "hostname": "lab-host"}}}'
 ```
@@ -245,6 +366,16 @@ kea_phpipam_subnet_map:
   - { phpipam_subnet_id: 9, kea_subnet_id: 1, family: 6 }
 kea_phpipam_sync_interval: 5min
 ```
+
+The sync uses the dhcp4 and dhcp6 API URLs that match `kea_api_mode`. Set `kea_phpipam_api_urls` (`{dhcp4: …, dhcp6: …}`) to point it somewhere else.
+
+- **TLS.** With `kea_api_tls_enabled`, the sync checks Kea's certificate against `kea_api_tls_ca_file` (`kea_phpipam_api_ca_file`). When the API requires client certificates, it presents the server's own certificate (`kea_phpipam_api_cert_file` / `_key_file`), which then needs the `clientAuth` extended key usage. phpIPAM's certificate is checked separately (`kea_phpipam_verify_tls`, `kea_phpipam_ca_file`).
+- **Deletions.** With `kea_phpipam_delete_missing` (the default), reservations whose address is gone from phpIPAM are removed. Three guards stop a phpIPAM fault from wiping Kea:
+  - A subnet that phpIPAM does not know is an error, not an empty list.
+  - If phpIPAM returns no addresses at all for a subnet, the sync refuses to remove every reservation in it, unless `kea_phpipam_allow_empty_source: true`.
+  - `kea_phpipam_max_deletes` caps removals per subnet and run.
+
+  A refused subnet is logged, makes the run fail (visible with `systemctl status kea-phpipam-sync`), and leaves Kea unchanged.
 
 Run it by hand with `kea-phpipam-sync --dry-run -v`.
 
@@ -340,15 +471,25 @@ Quote IPv6 addresses in YAML. Unquoted, an all-digit address such as `2001:0:0:0
 
 Classic TSIG keys (`kea_ddns_tsig_keys`) are supported for BIND-style servers. Windows DNS does not support them.
 
+## Firewall
+
+When firewalld is running (`kea_firewalld_manage`, zone `kea_firewalld_zone`):
+
+- The `dhcp` and `dhcpv6` services are allowed for the enabled families.
+- The API ports are opened to the zone when `kea_api_host` is not a loopback address (`kea_firewalld_open_api`).
+- HA ports accept only the peers' addresses, through rich rules (`kea_firewalld_ha_restrict_to_peers`).
+- With `kea_firewalld_remove_stale` (the default), the role also removes what it no longer needs. Examples are kea-ctrl-agent's port after the API moves to the daemons, an old API port, and the rule for a former HA peer. It leaves a port alone if another service is now listening on it.
+
 ## SELinux, fapolicyd and FIPS
 
 **SELinux.** When SELinux is enabled, the role works with it and never changes the mode. Turn this off with `kea_selinux_manage: false`.
 
-- It labels every TCP port Kea listens on: the Control Agent API, and the HA listeners on 8001/8002. The type is a `kea*_port_t` type if the loaded policy has one, otherwise `http_port_t`. Override it with `kea_selinux_port_type`.
+- RHEL's targeted policy (8, 9 and 10) has no Kea module. Kea's binaries are labelled `bin_t`, and Kea runs as `unconfined_service_t`, which may bind any port. So by default the role labels no ports, and changes no existing port types. 8000 (`soundd_port_t`) and 8002 (`xen_port_t`), for example, stay as they are.
+- If a Kea policy module is loaded, so Kea runs in its own domain, the role labels the API and HA ports with that policy's `kea*_port_t` type. Set `kea_selinux_port_type` to choose the type, or to label ports in any case.
 - It runs `restorecon` on `/etc/kea`, `/var/lib/kea` and `/var/log/kea`. If you move those directories with `kea_config_dir`, `kea_lib_dir` or `kea_log_dir`, the role adds `semanage fcontext -e` equivalence rules first, so the new paths get the same labels.
 - It labels the GSS-TSIG keytab `krb5_keytab_t`.
 - You can set booleans (`kea_selinux_booleans`) and extra file contexts (`kea_selinux_fcontexts`).
-- For troubleshooting only, `kea_selinux_permissive_domain: true` puts just the Kea domain (`kea_selinux_domain`, default `kea_t`) in permissive mode. Collect denials with `ausearch -m AVC -c kea`, build a local module, then turn it back off.
+- For troubleshooting only, and only with a Kea policy module, `kea_selinux_permissive_domain: true` puts just the Kea domain (`kea_selinux_domain`, default `kea_t`) in permissive mode. Collect denials with `ausearch -m AVC -c kea`, build a local module, then turn it back off. Without a module the role refuses this setting, since SELinux doesn't restrict Kea in the first place.
 
 **fapolicyd.** fapolicyd already trusts everything installed by RPM, which covers Kea, its hooks and Python. When fapolicyd is present, the role writes `/etc/fapolicyd/trust.d/kea-dhcp` with the path, size and SHA-256 of every file it deploys outside RPM, then runs `fapolicyd-cli --update`. That covers the phpIPAM sync script, plus anything you list in `kea_fapolicyd_trusted_files` (for example custom hook libraries). Because the role recomputes the hashes on every run, updated files stay trusted.
 
@@ -357,13 +498,40 @@ Classic TSIG keys (`kea_ddns_tsig_keys`) are supported for BIND-style servers. W
 - `kea_fips_required: true` fails the play when the host is not in FIPS mode.
 - In FIPS mode, TSIG keys must use HMAC-SHA256 or stronger. The role rejects HMAC-MD5, which is also what Kea uses when a key has no algorithm.
 - Active Directory Kerberos only offers AES-SHA1 encryption types, and the default FIPS policy on RHEL 9 and later rejects them. To use GSS-TSIG against Windows DNS on such a host, set `kea_crypto_policy: "FIPS:AD-SUPPORT"` and reboot. The role warns when this applies.
-- Kea, its TLS (Control Agent API, HA, databases) and the phpIPAM sync all use the system OpenSSL, so they follow the system FIPS policy. Use RSA keys of 2048 bits or more, or ECDSA P-256/P-384, for the API certificates.
+- Kea, its TLS (API, HA, databases) and the phpIPAM sync all use the system OpenSSL, so they follow the system FIPS policy. Use RSA keys of 2048 bits or more, or ECDSA P-256/P-384, for the API certificates.
+
+## Operations
+
+**Configuration changes.** Configuration, password-file and HA changes reload the daemons. A reload sends SIGHUP through the units' `ExecReload`. Kea re-reads its files, keeps its in-memory leases, and HA keeps its state. Package upgrades, systemd drop-in changes, SELinux port changes and new certificates restart the affected daemons. In a cluster a restart makes HA resync with the partner, so:
+
+- Run plays with `serial: 1`, and wait for `ha-heartbeat` to report the normal state before the next node (see the example under [High availability](#high-availability)).
+- With `kea_package_state: latest`, upgrade one node at a time, and read ISC's release notes first. HA peers should run the same Kea version except during the upgrade.
+
+**Health checks.** These commands go to a daemon's API (`:8004` for DHCPv4), or to kea-ctrl-agent with `"service": ["dhcp4"]`:
+
+| Command | Answers |
+|---|---|
+| `status-get` | uptime, reload time, multi-threading and HA state |
+| `ha-heartbeat` | HA state (`hot-standby`, `load-balancing`, `partner-down`, ...) |
+| `statistic-get-all` / `stat-lease4-get` | packet counters and per-subnet lease use (`stat_cmds`) |
+| `config-get` | the running configuration (Kea masks passwords) |
+
+**Backups.**
+- With memfile, leases live in `kea_lib_dir` (`kea-leases4.csv`, `kea-leases6.csv`, plus `.2` files while lease file cleanup runs every `lfc-interval`). Back up that directory, or rely on the HA partner, which holds a full copy.
+- Back up SQL lease and hosts databases with the database's own tools.
+- The configuration is generated by the role, so the inventory is its backup.
+
+**Troubleshooting.**
+- `kea-dhcp4 -t /etc/kea/kea-dhcp4.conf` checks a configuration. The role runs the same check before installing one.
+- Logs are in `kea_log_dir`. Raise one area with an extra logger, for example `kea-dhcp4.packets` at DEBUG level 55, rather than the whole daemon.
+- If no DHCPv4 offers go out for directly connected clients, check `kea_dhcp4_interfaces` and that `kea_dhcp4_socket_type` is `raw`.
+- If HA stays in `waiting` or `communications-interrupted`, test the peer URL from each node: `curl --cacert … --cert … --key … https://<peer>:8001/`. Check the firewall rich rules (`firewall-cmd --list-rich-rules`) and the certificates' IP subjectAltNames.
 
 ## Logging
 
 | Variable | Default |
 |---|---|
-| `kea_log_output` | `file`: `/var/log/kea/kea-dhcp4.log`, `kea-dhcp6.log`, `kea-dhcp-ddns.log`, `kea-ctrl-agent.log`. Also `syslog`, `stdout` or `stderr`. |
+| `kea_log_output` | `file`: `/var/log/kea/kea-dhcp4.log`, `kea-dhcp6.log`, `kea-dhcp-ddns.log`, and `kea-ctrl-agent.log` when it runs. Also `syslog`, `stdout` or `stderr`. |
 | `kea_log_severity` / `kea_log_debuglevel` | `INFO` / `0` |
 | `kea_log_maxsize` / `kea_log_maxver` | 10 MiB / 8 files. Kea rotates the files itself. |
 | `kea_log_pattern` | empty, which uses Kea's default pattern (best for log shippers) |
@@ -378,9 +546,13 @@ All variables, with comments, are in [`defaults/main.yml`](defaults/main.yml). T
 | Variable | Default |
 |---|---|
 | `kea_dhcp4_enabled` / `kea_dhcp6_enabled` | `true` / `false` |
+| `kea_dhcp4_interfaces` / `kea_dhcp6_interfaces` | `[]`, required once a family has subnets |
 | `kea_dhcp4_authoritative` | `false` (see [Authoritative mode](#authoritative-mode)) |
 | `kea_ddns_enabled` | `false` |
-| `kea_ctrl_agent_enabled` | `true` |
+| `kea_api_enabled` | `true` |
+| `kea_api_mode` | `auto` (see [API](#api-and-run-time-reservations-phpipam-and-others)) |
+| `kea_api_host` / `kea_api_users` | `127.0.0.1` / `[]` (users are required for a non-loopback host) |
+| `kea_api_tls_enabled` / `kea_ha_tls_enabled` | `false` / `false` |
 | `kea_ha_enabled` | `false` |
 | `kea_pxe_enabled` | `false` |
 | `kea_ping_check_enabled` | `false` |
@@ -388,20 +560,36 @@ All variables, with comments, are in [`defaults/main.yml`](defaults/main.yml). T
 | `kea_firewalld_manage` / `kea_selinux_manage` / `kea_fapolicyd_manage` | `true` / `true` / `true` |
 | `kea_fips_required` | `false` |
 | `kea_validate_config` | `true` |
+| `kea_port_check` | `true` |
 
-Tags: `kea_install`, `kea_tuning`, `kea_database`, `kea_config`, `kea_security` (`kea_selinux`, `kea_fips`, `kea_fapolicyd`), `kea_firewall`, `kea_service`, `kea_phpipam`.
+Tags: `kea_assert`, `kea_install`, `kea_ports`, `kea_tuning`, `kea_database`, `kea_config`, `kea_security` (`kea_selinux`, `kea_fips`, `kea_fapolicyd`), `kea_firewall`, `kea_service`, `kea_phpipam`. Later tasks rely on facts that `kea_install` sets, such as the detected Kea version and API mode, so include it when you limit a run with tags.
+
+See [CHANGELOG.md](CHANGELOG.md) for changes that need action when upgrading the role.
 
 ## Testing
 
 Tests run locally with podman, on the AlmaLinux 10 WSL distribution (any EL10 host works too). The repository directory must be named `ansible-role-kea_dhcp`.
 
 ```bash
-scripts/test.sh            # lint + every scenario
-scripts/test.sh lint       # yamllint + ansible-lint only
-scripts/test.sh default    # DHCPv4/v6, DDNS, PXE, API, reservations, logging on EL9 and EL10
-scripts/test.sh ha         # two-node hot-standby cluster, failover and recovery
-scripts/test.sh el8        # the default scenario on EL8, under ansible-core 2.16
+scripts/test.sh              # lint + every scenario
+scripts/test.sh lint         # yamllint + ansible-lint only
+scripts/test.sh default      # DHCPv4/v6, DDNS, PXE, API, reservations, logging, port check on EL9 and EL10
+scripts/test.sh ha           # two-node hot-standby cluster: HA over HTTPS, peer-only firewall, failover
+scripts/test.sh ha-lb        # the same in load-balancing mode
+scripts/test.sh ha-backup    # the same in passive-backup mode (no failover)
+scripts/test.sh el8          # the default scenario on EL8 under ansible-core 2.16, API on kea-ctrl-agent
+scripts/test.sh migrate      # kea-ctrl-agent to daemon API on a live host: firewall, reload not restart
+scripts/test.sh integration  # MariaDB lease/hosts databases with kea_db_init, API over HTTPS with
+                             # client certificates, phpIPAM sync and its deletion guards (mock phpIPAM)
+scripts/test.sh distro       # the default scenario with Kea from AppStream on EL10
 ```
+
+The containers can't cover these, so test them on a VM before relying on them:
+- SELinux in enforcing mode (it is disabled inside containers)
+- fapolicyd enforcement (the tests only check the trust file)
+- GSS-TSIG against Active Directory
+- PostgreSQL databases
+- EPEL's older Kea on EL8 and EL9
 
 The script installs podman, Python and git with dnf if they are missing. It builds two virtualenvs under `.cache/test/`: one with current ansible-core, molecule, molecule-plugins[podman], ansible-lint and yamllint, and one with ansible-core 2.16 for EL8. Each virtualenv gets its own pinned collections.
 

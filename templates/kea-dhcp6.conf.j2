@@ -11,7 +11,6 @@
     "service-sockets-max-retries": kea_interfaces_service_sockets_max_retries | int,
     "service-sockets-retry-wait-time": kea_interfaces_service_sockets_retry_wait_time | int
   },
-  "control-socket": {"socket-type": "unix", "socket-name": __kea_dhcp6_socket},
   "lease-database": kea_dhcp6_lease_database,
   "valid-lifetime": kea_dhcp6_valid_lifetime | int,
   "preferred-lifetime": kea_dhcp6_preferred_lifetime | int,
@@ -47,5 +46,6 @@
   "min-preferred-lifetime": kea_dhcp6_min_preferred_lifetime,
   "max-preferred-lifetime": kea_dhcp6_max_preferred_lifetime
 }) | from_json) %}
+{% set cfg = cfg | combine(m.control_sockets(__kea_dhcp6_socket, kea_api_dhcp6_port) | from_json) %}
 {% set cfg = cfg | combine(m.ddns_globals() | from_json) | combine(kea_dhcp6_extra_config, recursive=true) %}
 {{ {"Dhcp6": cfg} | to_nice_json(indent=2) }}

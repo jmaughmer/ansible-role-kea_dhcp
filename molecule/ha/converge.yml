@@ -1,24 +1,76 @@
 ---
 - name: Converge
   hosts: kea_cluster
+  vars:
+    # Host names carry a per-checkout suffix (see molecule.yml); sorted,
+    # kea-*-primary-* comes before kea-*-standby-*.
+    primary: "{{ (groups['kea_cluster'] | sort)[0] }}"
+    standby: "{{ (groups['kea_cluster'] | sort)[1] }}"
+    # The second node's role in each HA mode.
+    partner_role: "{{ {'hot-standby': 'standby', 'load-balancing': 'secondary', 'passive-backup': 'backup'}[kea_ha_mode] }}"
+    pki: /root/ha-pki
   pre_tasks:
     - name: Build the cluster from the addresses podman assigned
       ansible.builtin.set_fact:
         kea_ha_peers:
           - { name: "{{ primary }}", address: "{{ hostvars[primary].ansible_facts.default_ipv4.address }}", role: primary }
-          - { name: "{{ standby }}", address: "{{ hostvars[standby].ansible_facts.default_ipv4.address }}", role: standby }
+          - { name: "{{ standby }}", address: "{{ hostvars[standby].ansible_facts.default_ipv4.address }}", role: "{{ partner_role }}" }
         kea_dhcp4_subnets:
           - id: 1
             subnet: "{{ net }}"
             pools: [{ pool: "{{ base }}.100 - {{ base }}.200" }]
       vars:
-        # Host names carry a per-checkout suffix (see molecule.yml); sorted,
-        # kea-ha-primary-* comes before kea-ha-standby-*.
-        primary: "{{ (groups['kea_cluster'] | sort)[0] }}"
-        standby: "{{ (groups['kea_cluster'] | sort)[1] }}"
         # podman networks are /24s.
         net: "{{ ansible_facts.default_ipv4.network }}/{{ ansible_facts.default_ipv4.prefix }}"
         base: "{{ ansible_facts.default_ipv4.network | regex_replace('\\.0$', '') }}"
+
+    # A test CA and one certificate per node, made once on the primary. Each
+    # node's certificate names its IP address and serves both its HA listener
+    # and its connections to the partner.
+    - name: Create the PKI directory
+      ansible.builtin.file:
+        path: "{{ pki }}"
+        state: directory
+        mode: "0700"
+      delegate_to: "{{ primary }}"
+      run_once: true
+
+    - name: Make the HA test certificates
+      ansible.builtin.shell:
+        cmd: |
+          set -e
+          cd {{ pki }}
+          test -f ca.crt || openssl req -x509 -newkey rsa:2048 -nodes -keyout ca.key -out ca.crt \
+            -days 30 -subj /CN=kea-test-ca 2>/dev/null
+          test -f {{ item }}.crt && exit 0
+          openssl req -newkey rsa:2048 -nodes -keyout {{ item }}.key -out {{ item }}.csr -subj /CN={{ item }} 2>/dev/null
+          openssl x509 -req -in {{ item }}.csr -CA ca.crt -CAkey ca.key -CAcreateserial -out {{ item }}.crt -days 30 \
+            -extfile <(printf 'subjectAltName=IP:%s\nextendedKeyUsage=serverAuth,clientAuth\n' \
+                       {{ hostvars[item].ansible_facts.default_ipv4.address }}) 2>/dev/null
+          echo created
+        executable: /bin/bash
+      loop: "{{ groups['kea_cluster'] }}"
+      register: certs
+      changed_when: "'created' in certs.stdout"
+      delegate_to: "{{ primary }}"
+      run_once: true
+
+    - name: Read the certificates
+      ansible.builtin.slurp:
+        src: "{{ pki }}/{{ item }}"
+      loop: "{{ ['ca.crt'] + groups['kea_cluster'] | product(['.crt', '.key']) | map('join') | list }}"
+      register: pem
+      delegate_to: "{{ primary }}"
+      run_once: true
+
+    - name: Hand each node its certificate
+      ansible.builtin.set_fact:
+        kea_ha_tls_ca_content: "{{ files['ca.crt'] }}"
+        kea_ha_tls_cert_content: "{{ files[inventory_hostname ~ '.crt'] }}"
+        kea_ha_tls_key_content: "{{ files[inventory_hostname ~ '.key'] }}"
+      vars:
+        files: "{{ dict(pem.results | map(attribute='item') | zip(pem.results | map(attribute='content') | map('b64decode'))) }}"
+      no_log: true
   tasks:
     - name: Include the role
       ansible.builtin.include_role:

@@ -1,0 +1,45 @@
+---
+# Collections are installed by scripts/test.sh, pinned per ansible-core.
+dependency:
+  name: galaxy
+  enabled: false
+driver:
+  name: podman
+# Names end in TEST_RUN_ID, which scripts/test.sh sets per checkout, so
+# several checkouts can run the same scenario at once.
+platforms:
+  - name: kea-distro-${TEST_RUN_ID:-local}
+    image: docker.io/almalinux/10-init
+    pre_build_image: true
+    command: /sbin/init
+    systemd: always
+    privileged: true
+    rootless: true
+# The default scenario's playbooks with Kea from AppStream (EL10 ships Kea
+# 3.0 with every hook in kea-hooks) instead of ISC's repository.
+provisioner:
+  name: ansible
+  playbooks:
+    prepare: ../default/prepare.yml
+    converge: ../default/converge.yml
+    verify: ../default/verify.yml
+  env:
+    ANSIBLE_ROLES_PATH: "${MOLECULE_PROJECT_DIRECTORY}/.."
+  inventory:
+    group_vars:
+      all:
+        # Keep test containers from changing the host's kernel settings.
+        kea_sysctl_manage: false
+        kea_install_source: distro
+verifier:
+  name: ansible
+scenario:
+  test_sequence:
+    - destroy
+    - syntax
+    - create
+    - prepare
+    - converge
+    - idempotence
+    - verify
+    - destroy

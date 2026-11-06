@@ -1,0 +1,11 @@
+---
+# Shared by converge.yml and side_effect.yml.
+kea_dhcp4_interfaces: ["*"]
+kea_dhcp4_subnets:
+  - id: 1
+    subnet: 192.0.2.0/24
+    pools: [{ pool: 192.0.2.100 - 192.0.2.200 }]
+# Reachable from the network, so the API port is opened in firewalld.
+kea_api_host: 0.0.0.0
+kea_api_users:
+  - { user: admin, password: molecule-secret }

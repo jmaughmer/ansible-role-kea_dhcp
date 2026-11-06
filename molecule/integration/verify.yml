@@ -1,0 +1,107 @@
+---
+- name: Verify databases, API TLS and the phpIPAM sync
+  hosts: all
+  gather_facts: false
+  vars:
+    api: &api
+      url: https://127.0.0.1:8004/
+      method: POST
+      url_username: admin
+      url_password: molecule-secret
+      force_basic_auth: true
+      body_format: json
+      ca_path: /etc/kea/tls/ca.crt
+      client_cert: /etc/kea/tls/kea.crt
+      client_key: /etc/kea/tls/kea.key
+  tasks:
+    # --- kea_db_init -------------------------------------------------------
+    - name: Read the schema version of both databases
+      ansible.builtin.command: mysql -N -B -e "SELECT version FROM {{ item }}.schema_version"
+      loop: [kea_hosts, kea_leases]
+      register: schema
+      changed_when: false
+
+    - name: Assert kea_db_init set up the lease and the hosts database
+      ansible.builtin.assert:
+        that: schema.results | map(attribute='stdout') | map('int') | min > 0
+
+    # --- API over HTTPS with client certificates ---------------------------
+    - name: The API answers a client with a certificate
+      ansible.builtin.uri:
+        <<: *api
+        body: { command: status-get }
+      register: status
+      failed_when: status.json[0].result != 0
+
+    - name: Call the API without a client certificate
+      ansible.builtin.uri:
+        url: https://127.0.0.1:8004/
+        method: POST
+        url_username: admin
+        url_password: molecule-secret
+        force_basic_auth: true
+        body_format: json
+        ca_path: /etc/kea/tls/ca.crt
+        body: { command: status-get }
+      register: no_cert
+      failed_when: false
+
+    - name: Assert the API refused it
+      ansible.builtin.assert:
+        that: no_cert.status | default(-1) != 200
+
+    - name: Add a lease through the API
+      ansible.builtin.uri:
+        <<: *api
+        body:
+          command: "{{ item.command }}"
+          arguments: "{{ item.arguments }}"
+      register: lease
+      failed_when: lease.json[0].result not in [0, 3]
+      loop:
+        - { command: lease4-del, arguments: { ip-address: 192.0.2.150 } }
+        - { command: lease4-add, arguments: { ip-address: 192.0.2.150, hw-address: "aa:bb:cc:dd:ee:99" } }
+      loop_control:
+        label: "{{ item.command }}"
+
+    - name: Count leases in the MySQL lease database
+      ansible.builtin.command: mysql -N -B -e "SELECT COUNT(*) FROM kea_leases.lease4"
+      register: leases
+      changed_when: false
+      failed_when: leases.stdout | int < 1
+
+    # --- phpIPAM sync --------------------------------------------------------
+    - name: Sync two addresses from phpIPAM
+      ansible.builtin.include_tasks: tasks/sync_round.yml
+      vars:
+        round_name: two addresses
+        phpipam_data: >-
+          {"subnets": {"7": [
+          {"ip": "192.0.2.21", "mac": "aa:bb:cc:00:00:21", "hostname": "host21"},
+          {"ip": "192.0.2.22", "mac": "AA-BB-CC-00-00-22", "hostname": "host22"}]}}
+        expect_success: true
+        expect_macs: ["aa:bb:cc:00:00:21", "aa:bb:cc:00:00:22"]
+
+    - name: An empty phpIPAM subnet must not empty Kea
+      ansible.builtin.include_tasks: tasks/sync_round.yml
+      vars:
+        round_name: empty subnet
+        phpipam_data: '{"subnets": {"7": []}}'
+        expect_success: false
+        expect_macs: ["aa:bb:cc:00:00:21", "aa:bb:cc:00:00:22"]
+
+    - name: A subnet phpIPAM does not know is an error
+      ansible.builtin.include_tasks: tasks/sync_round.yml
+      vars:
+        round_name: unknown subnet
+        phpipam_data: '{"subnets": {}}'
+        expect_success: false
+        expect_macs: ["aa:bb:cc:00:00:21", "aa:bb:cc:00:00:22"]
+
+    - name: A removed address is removed from Kea
+      ansible.builtin.include_tasks: tasks/sync_round.yml
+      vars:
+        round_name: one address
+        phpipam_data: '{"subnets": {"7": [{"ip": "192.0.2.21", "mac": "aa:bb:cc:00:00:21", "hostname": "host21"}]}}'
+        expect_success: true
+        expect_macs: ["aa:bb:cc:00:00:21"]

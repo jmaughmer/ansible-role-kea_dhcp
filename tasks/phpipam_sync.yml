@@ -20,11 +20,21 @@
       phpipam_app_id: "{{ kea_phpipam_app_id }}"
       phpipam_token: "{{ kea_phpipam_token }}"
       phpipam_verify_tls: "{{ kea_phpipam_verify_tls | bool }}"
-      kea_api_url: "{{ kea_phpipam_api_url }}"
+      # kea_phpipam_api_url (a single URL) is the older setting.
+      kea_api_urls: >-
+        {{ kea_phpipam_api_urls if kea_phpipam_api_urls | length > 0
+           else ({'dhcp4': kea_phpipam_api_url, 'dhcp6': kea_phpipam_api_url} if kea_phpipam_api_url is defined
+                 else __kea_api_urls) }}
       kea_api_user: "{{ kea_phpipam_api_user }}"
       kea_api_password: "{{ kea_phpipam_api_password }}"
-      kea_api_verify_tls: "{{ kea_phpipam_verify_tls | bool }}"
+      kea_api_verify_tls: "{{ kea_phpipam_api_verify_tls | bool }}"
+      kea_api_ca_file: "{{ kea_phpipam_api_ca_file }}"
+      kea_api_cert_file: "{{ kea_phpipam_api_cert_file }}"
+      kea_api_key_file: "{{ kea_phpipam_api_key_file }}"
+      phpipam_ca_file: "{{ kea_phpipam_ca_file }}"
       delete_missing: "{{ kea_phpipam_delete_missing | bool }}"
+      allow_empty_source: "{{ kea_phpipam_allow_empty_source | bool }}"
+      max_deletes: "{{ kea_phpipam_max_deletes | int }}"
       subnet_map: "{{ kea_phpipam_subnet_map }}"
   no_log: true
 

@@ -1,0 +1,53 @@
+---
+# Runs before any port is configured, labelled for SELinux or opened in the
+# firewall. Listeners that belong to Kea itself (a re-run, or kea-ctrl-agent
+# when the API moves to the daemons) are not conflicts.
+- name: Assert Kea's own ports do not clash with each other
+  ansible.builtin.assert:
+    that:
+      - __kea_listen_tcp_ports | unique | length == __kea_listen_tcp_ports | length
+      - __kea_listen_udp_ports | unique | length == __kea_listen_udp_ports | length
+    fail_msg: >-
+      Two Kea listeners are set to the same port (TCP {{ __kea_listen_tcp_ports | join(', ') }};
+      UDP {{ __kea_listen_udp_ports | join(', ') }}). Check kea_api_*_port,
+      kea_ctrl_agent_port, kea_ha_dhcp4_port / kea_ha_dhcp6_port and kea_ddns_port.
+    quiet: true
+
+- name: List listening sockets
+  ansible.builtin.command: ss -Htulnp
+  register: __kea_listeners
+  changed_when: false
+  check_mode: false
+
+# The firewall tasks leave a stale Kea port open when something else uses it.
+- name: Note TCP ports other services listen on
+  ansible.builtin.set_fact:
+    __kea_foreign_tcp_ports: >-
+      {{ __kea_listeners.stdout_lines | select('match', '^tcp\s') | reject('search', '\(\("kea-')
+         | map('regex_replace', '^tcp\s+\S+\s+\S+\s+\S+\s+\S*:', '')
+         | map('regex_replace', '\s.*$', '') | unique | list }}
+
+- name: Check for other services on Kea's ports
+  when: kea_port_check | bool
+  block:
+    - name: Assert no other service listens on Kea's ports
+      ansible.builtin.assert:
+        that: __kea_port_conflicts | length == 0
+        fail_msg: >-
+          Ports Kea needs are already in use by other services:
+          {{ __kea_port_conflicts | map('regex_replace', '\s+', ' ') | join(' | ') }}.
+          Stop those services, or move Kea with kea_api_*_port, kea_ctrl_agent_port,
+          kea_ha_dhcp4_port / kea_ha_dhcp6_port or kea_ddns_port.
+          Set kea_port_check: false to skip this check.
+        quiet: true
+      vars:
+        # ss columns: Netid State Recv-Q Send-Q Local:Port Peer:Port Process.
+        __kea_port_pattern: '^{0}\s+\S+\s+\S+\s+\S+\s+\S*:({1})\s'
+        __kea_port_conflicts: >-
+          {{ ((__kea_listeners.stdout_lines
+               | select('search', __kea_port_pattern.format('tcp', __kea_listen_tcp_ports | join('|')))
+               | list if __kea_listen_tcp_ports | length > 0 else [])
+              + (__kea_listeners.stdout_lines
+                 | select('search', __kea_port_pattern.format('udp', __kea_listen_udp_ports | join('|')))
+                 | list if __kea_listen_udp_ports | length > 0 else []))
+             | reject('search', '\(\("kea-') | list }}

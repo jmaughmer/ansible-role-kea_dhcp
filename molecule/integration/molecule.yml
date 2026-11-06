@@ -1,0 +1,41 @@
+---
+# Collections are installed by scripts/test.sh, pinned per ansible-core.
+dependency:
+  name: galaxy
+  enabled: false
+driver:
+  name: podman
+# Names end in TEST_RUN_ID, which scripts/test.sh sets per checkout, so
+# several checkouts can run the same scenario at once.
+platforms:
+  - name: kea-integ-${TEST_RUN_ID:-local}
+    image: docker.io/almalinux/10-init
+    pre_build_image: true
+    command: /sbin/init
+    systemd: always
+    privileged: true
+    rootless: true
+# The pieces that need other services: MariaDB lease and hosts databases set
+# up by kea_db_init, the API over HTTPS with client certificates, and the
+# phpIPAM sync against a small mock of phpIPAM's API.
+provisioner:
+  name: ansible
+  env:
+    ANSIBLE_ROLES_PATH: "${MOLECULE_PROJECT_DIRECTORY}/.."
+  inventory:
+    group_vars:
+      all:
+        # Keep test containers from changing the host's kernel settings.
+        kea_sysctl_manage: false
+verifier:
+  name: ansible
+scenario:
+  test_sequence:
+    - destroy
+    - syntax
+    - create
+    - prepare
+    - converge
+    - idempotence
+    - verify
+    - destroy

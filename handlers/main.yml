@@ -38,8 +38,40 @@
   ansible.builtin.systemd_service:
     name: "{{ __kea_source.ctrl_agent_service }}"
     state: restarted
-  when: kea_ctrl_agent_enabled | bool
+  when: __kea_ctrl_agent_active | default(false) | bool
   listen: Restart kea
+
+# Kea re-reads its configuration on SIGHUP (the units' ExecReload), keeping
+# leases in memory and the HA state, where a restart would make HA resync.
+# reload-or-restart also starts a unit that is not running, and restarts one
+# whose unit file has no ExecReload.
+- name: Reload kea-dhcp4
+  ansible.builtin.command:  # noqa: command-instead-of-module
+    cmd: systemctl reload-or-restart {{ __kea_source.dhcp4_service }}
+  changed_when: true
+  when: kea_dhcp4_enabled | bool
+  listen: Reload kea
+
+- name: Reload kea-dhcp6
+  ansible.builtin.command:  # noqa: command-instead-of-module
+    cmd: systemctl reload-or-restart {{ __kea_source.dhcp6_service }}
+  changed_when: true
+  when: kea_dhcp6_enabled | bool
+  listen: Reload kea
+
+- name: Reload kea-dhcp-ddns
+  ansible.builtin.command:  # noqa: command-instead-of-module
+    cmd: systemctl reload-or-restart {{ __kea_source.ddns_service }}
+  changed_when: true
+  when: kea_ddns_enabled | bool
+  listen: Reload kea
+
+- name: Reload kea-ctrl-agent
+  ansible.builtin.command:  # noqa: command-instead-of-module
+    cmd: systemctl reload-or-restart {{ __kea_source.ctrl_agent_service }}
+  changed_when: true
+  when: __kea_ctrl_agent_active | default(false) | bool
+  listen: Reload kea
 
 - name: Restart kea-phpipam-sync timer
   ansible.builtin.systemd_service:

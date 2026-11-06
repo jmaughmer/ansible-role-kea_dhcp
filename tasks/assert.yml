@@ -15,6 +15,25 @@
     fail_msg: "kea_install_source must be one of {{ __kea_sources.keys() | list }}"
     quiet: true
 
+- name: Assert API mode
+  ansible.builtin.assert:
+    that: kea_api_mode in ['auto', 'daemon', 'ctrl_agent']
+    fail_msg: "kea_api_mode must be auto, daemon or ctrl_agent, not {{ kea_api_mode }}."
+    quiet: true
+
+- name: Assert a network-reachable API requires authentication
+  ansible.builtin.assert:
+    that: >-
+      not (kea_api_enabled | bool)
+      or kea_api_host is match('^(127\.|::1$|localhost$)')
+      or kea_api_users | length > 0
+      or kea_api_allow_unauthenticated | bool
+    fail_msg: >-
+      kea_api_host is {{ kea_api_host }}, so the API is reachable from the network,
+      but kea_api_users is empty. Anyone who can reach it could reconfigure or stop
+      Kea. Add kea_api_users, or set kea_api_allow_unauthenticated: true.
+    quiet: true
+
 - name: Assert ping check is available
   ansible.builtin.assert:
     that:
@@ -26,6 +45,23 @@
       but not with EPEL's Kea on EL8 or EL9.
     quiet: true
   when: kea_ping_check_enabled | bool
+
+- name: Assert interfaces are set for every family that has subnets
+  ansible.builtin.assert:
+    that: >-
+      not (item.enabled | bool) or item.interfaces | length > 0
+      or (item.subnets | length == 0 and item.networks | length == 0)
+    fail_msg: >-
+      {{ item.family }} has subnets but no interfaces to serve them on. Set
+      {{ item.var }}, e.g. [ens192], or ["*"] for every interface.
+    quiet: true
+  loop:
+    - { family: DHCPv4, var: kea_dhcp4_interfaces, enabled: "{{ kea_dhcp4_enabled }}", interfaces: "{{ kea_dhcp4_interfaces }}",
+        subnets: "{{ kea_dhcp4_subnets }}", networks: "{{ kea_dhcp4_shared_networks }}" }
+    - { family: DHCPv6, var: kea_dhcp6_interfaces, enabled: "{{ kea_dhcp6_enabled }}", interfaces: "{{ kea_dhcp6_interfaces }}",
+        subnets: "{{ kea_dhcp6_subnets }}", networks: "{{ kea_dhcp6_shared_networks }}" }
+  loop_control:
+    label: "{{ item.family }}"
 
 - name: Assert every subnet has a unique id
   ansible.builtin.assert:
@@ -74,14 +110,25 @@
         fail_msg: kea_ha_dedicated_listener requires kea_multi_threading_enabled.
         quiet: true
 
+    - name: Assert HA TLS matches the endpoint peers connect to
+      ansible.builtin.assert:
+        that: kea_ha_dedicated_listener | bool or (kea_ha_tls_enabled | bool) == (kea_api_tls_enabled | bool)
+        fail_msg: >-
+          Without a dedicated HA listener, peers connect to kea-ctrl-agent, which serves
+          HTTPS exactly when kea_api_tls_enabled is true. Set kea_ha_tls_enabled to the
+          same value.
+        quiet: true
+
     - name: Assert peers can reach the Control Agent
       ansible.builtin.assert:
         that:
-          - kea_ctrl_agent_enabled | bool
-          - kea_ctrl_agent_host not in ['127.0.0.1', '::1', 'localhost']
+          - kea_api_enabled | bool
+          - kea_api_mode != 'daemon'
+          - kea_api_host not in ['127.0.0.1', '::1', 'localhost']
         fail_msg: >-
-          Without a dedicated HA listener, peers talk through the Control Agent,
-          so kea_ctrl_agent_host must be an address the other peers can reach.
+          Without a dedicated HA listener, peers talk through kea-ctrl-agent, so
+          the API must be enabled, kea_api_mode must not be 'daemon', and
+          kea_api_host must be an address the other peers can reach.
         quiet: true
       when: not (kea_ha_dedicated_listener | bool)
 
@@ -101,13 +148,13 @@
   when: kea_phpipam_sync_enabled | bool
   ansible.builtin.assert:
     that:
-      - kea_ctrl_agent_enabled | bool
+      - kea_api_enabled | bool
       - kea_hook_host_cmds | bool
       - kea_hosts_database | length > 0
       - kea_phpipam_token | length > 0
       - kea_phpipam_subnet_map | length > 0
     fail_msg: >-
-      phpIPAM sync needs the Control Agent, the host_cmds hook, a hosts
+      phpIPAM sync needs the API (kea_api_enabled), the host_cmds hook, a hosts
       database (kea_hosts_database), kea_phpipam_token and kea_phpipam_subnet_map.
     quiet: true
 

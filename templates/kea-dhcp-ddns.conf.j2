@@ -34,11 +34,11 @@
   "dns-server-timeout": kea_ddns_dns_server_timeout | int,
   "ncr-protocol": "UDP",
   "ncr-format": "JSON",
-  "control-socket": {"socket-type": "unix", "socket-name": __kea_ddns_socket},
   "tsig-keys": kea_ddns_tsig_keys,
   "forward-ddns": {"ddns-domains": ns.forward},
   "reverse-ddns": {"ddns-domains": ns.reverse},
   "hooks-libraries": ns.hooks + kea_ddns_extra_hooks,
   "loggers": m.loggers('kea-dhcp-ddns', 'kea-dhcp-ddns.log', kea_ddns_loggers, kea_ddns_extra_loggers) | from_json
-} | combine(kea_ddns_extra_config, recursive=true) %}
+} | combine(m.control_sockets(__kea_ddns_socket, kea_api_ddns_port) | from_json)
+  | combine(kea_ddns_extra_config, recursive=true) %}
 {{ {"DhcpDdns": cfg} | to_nice_json(indent=2) }}

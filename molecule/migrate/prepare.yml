@@ -1,0 +1,14 @@
+---
+- name: Prepare
+  hosts: all
+  tasks:
+    - name: Install firewalld
+      ansible.builtin.dnf:
+        name: firewalld
+        state: present
+
+    - name: Start firewalld
+      ansible.builtin.systemd_service:
+        name: firewalld
+        state: started
+        enabled: true

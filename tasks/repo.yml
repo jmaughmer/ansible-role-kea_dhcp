@@ -4,6 +4,13 @@
     - kea_install_source == 'isc'
     - kea_manage_repo | bool
   block:
+    # get_url asks the server again on every run even with force: false, so a
+    # slow or unreachable Cloudsmith would fail re-runs; fetch only once.
+    - name: Check for the ISC Kea repository definition
+      ansible.builtin.stat:
+        path: "/etc/yum.repos.d/isc-kea-{{ kea_isc_repo_series }}.repo"
+      register: __kea_repo_stat
+
     - name: Install the ISC Kea repository definition
       ansible.builtin.get_url:
         url: "{{ kea_isc_repo_file_url }}"
@@ -13,6 +20,7 @@
         mode: "0644"
         force: false
       register: __kea_repo_file
+      when: not __kea_repo_stat.stat.exists
 
     - name: Import the ISC repository signing keys  # noqa: no-handler
       ansible.builtin.command: >-

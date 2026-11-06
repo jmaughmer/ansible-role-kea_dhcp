@@ -2,8 +2,14 @@
 """Sync phpIPAM addresses that carry a MAC address into Kea reservations.
 
 Reads addresses from the phpIPAM REST API and reconciles them with the
-reservations Kea holds in its hosts database, using the Kea Control Agent
-API and the host_cmds hook (reservation-get-all / -add / -del).
+reservations Kea holds in its hosts database, through the Kea REST API (each
+daemon's own HTTP socket on Kea 2.7.2+, or kea-ctrl-agent on older Kea) and
+the host_cmds hook (reservation-get-page / -add / -del).
+
+Safety: a subnet that phpIPAM does not know is an error, not an empty list,
+and the script will not remove every reservation in a subnet because phpIPAM
+returned no addresses unless "allow_empty_source" is set. "max_deletes" caps
+removals per subnet and run.
 
 Configuration is a JSON file (default /etc/kea/kea-phpipam-sync.json)
 written by the ansible-role-kea_dhcp role.
@@ -30,17 +36,25 @@ def normalise_mac(mac):
     return mac
 
 
-def http_json(url, payload=None, headers=None, verify=True):
+def tls_context(verify=True, ca_file="", cert_file="", key_file=""):
+    """TLS settings for one server: certificate checks, private CA, client cert."""
+    ctx = ssl.create_default_context(cafile=ca_file or None)
+    if not verify:
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+    if cert_file:
+        ctx.load_cert_chain(cert_file, key_file or None)
+    return ctx
+
+
+def http_json(url, payload=None, headers=None, ctx=None):
     data = None if payload is None else json.dumps(payload).encode()
     req = urllib.request.Request(url, data=data, method="POST" if data else "GET")
     req.add_header("Content-Type", "application/json")
     for key, value in (headers or {}).items():
         req.add_header(key, value)
-    ctx = None
-    if url.startswith("https://") and not verify:
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
+    if not url.startswith("https://"):
+        ctx = None
     try:
         with urllib.request.urlopen(req, context=ctx, timeout=30) as resp:
             return json.loads(resp.read().decode())
@@ -54,16 +68,21 @@ def http_json(url, payload=None, headers=None, verify=True):
 
 class Kea:
     def __init__(self, cfg):
-        self.url = cfg["kea_api_url"]
+        # One URL per service: the daemons' own API sockets (Kea 2.7.2+), or
+        # kea-ctrl-agent's URL for both. "kea_api_url" is the older form.
+        self.urls = cfg.get("kea_api_urls") or {
+            "dhcp4": cfg["kea_api_url"], "dhcp6": cfg["kea_api_url"]}
         self.headers = {}
         if cfg.get("kea_api_user"):
             token = f"{cfg['kea_api_user']}:{cfg['kea_api_password']}"
             self.headers["Authorization"] = "Basic " + base64.b64encode(token.encode()).decode()
-        self.verify = cfg.get("kea_api_verify_tls", True)
+        self.ctx = tls_context(cfg.get("kea_api_verify_tls", True), cfg.get("kea_api_ca_file", ""),
+                               cfg.get("kea_api_cert_file", ""), cfg.get("kea_api_key_file", ""))
 
     def command(self, service, command, arguments):
+        # The daemons ignore "service"; kea-ctrl-agent needs it.
         payload = {"command": command, "service": [service], "arguments": arguments}
-        answer = http_json(self.url, payload, self.headers, self.verify)
+        answer = http_json(self.urls[service], payload, self.headers, self.ctx)
         if isinstance(answer, list):
             answer = answer[0]
         return answer
@@ -87,9 +106,20 @@ class Kea:
                 return hosts
 
 
+def phpipam_get(cfg, path):
+    url = f"{cfg['phpipam_url'].rstrip('/')}/api/{cfg['phpipam_app_id']}/{path}"
+    ctx = tls_context(cfg.get("phpipam_verify_tls", True), cfg.get("phpipam_ca_file", ""))
+    return http_json(url, headers={"token": cfg["phpipam_token"]}, ctx=ctx)
+
+
 def phpipam_addresses(cfg, subnet_id):
-    url = f"{cfg['phpipam_url'].rstrip('/')}/api/{cfg['phpipam_app_id']}/subnets/{subnet_id}/addresses/"
-    answer = http_json(url, headers={"token": cfg["phpipam_token"]}, verify=cfg.get("phpipam_verify_tls", True))
+    # phpIPAM answers 404 both for an empty subnet and for one that does not
+    # exist, so check the subnet first: a wrong or deleted subnet must not
+    # read as "no addresses" and wipe the Kea reservations.
+    subnet = phpipam_get(cfg, f"subnets/{subnet_id}/")
+    if not subnet.get("success"):
+        raise RuntimeError(f"phpIPAM subnet {subnet_id} not found: {subnet.get('message')}")
+    answer = phpipam_get(cfg, f"subnets/{subnet_id}/addresses/")
     if not answer.get("success"):
         if answer.get("code") == 404:
             return []
@@ -128,6 +158,19 @@ def sync_subnet(kea, cfg, mapping, dry_run):
     current = {normalise_mac(h.get("hw-address")): h
                for h in kea.reservations(service, subnet_id) if h.get("hw-address")}
     added = removed = 0
+
+    doomed = [mac for mac in current if mac not in wanted]
+    if not cfg.get("delete_missing", True):
+        doomed = []
+    if current and not wanted and doomed and not cfg.get("allow_empty_source", False):
+        raise RuntimeError(
+            f"phpIPAM returned no addresses for subnet {mapping['phpipam_subnet_id']}; refusing to remove "
+            f"all {len(current)} reservations in Kea subnet {subnet_id} (set allow_empty_source to allow it)")
+    max_deletes = int(cfg.get("max_deletes", 0) or 0)
+    if max_deletes and len(doomed) > max_deletes:
+        raise RuntimeError(
+            f"{len(doomed)} reservations in Kea subnet {subnet_id} would be removed, more than "
+            f"max_deletes ({max_deletes}); nothing changed")
 
     for mac, host in list(current.items()):
         if mac in wanted and comparable(host, family) == comparable(wanted[mac], family):

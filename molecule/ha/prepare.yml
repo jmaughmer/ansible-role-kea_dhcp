@@ -1,11 +1,19 @@
 ---
 # The almalinux init images have no iproute, and without it Ansible gathers
 # no network facts; converge.yml builds the cluster from default_ipv4.
+# firewalld runs so the role's peer-only HA rules are exercised, and openssl
+# makes the HA test certificates.
 - name: Prepare
   hosts: all
   gather_facts: false
   tasks:
-    - name: Install iproute
+    - name: Install iproute, firewalld and openssl
       ansible.builtin.dnf:
-        name: iproute
+        name: [iproute, firewalld, openssl]
         state: present
+
+    - name: Start firewalld
+      ansible.builtin.systemd_service:
+        name: firewalld
+        state: started
+        enabled: true

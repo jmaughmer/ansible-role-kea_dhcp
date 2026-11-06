@@ -45,5 +45,7 @@ provisioner:
         kea_api_users:
           - { user: admin, password: molecule-secret }
         kea_dhcp4_interfaces: [eth0]
+        # HTTPS between the peers; converge.yml makes the certificates.
+        kea_ha_tls_enabled: true
 verifier:
   name: ansible

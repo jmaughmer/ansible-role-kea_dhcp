@@ -1,0 +1,60 @@
+---
+- name: Verify the move from kea-ctrl-agent to the daemons
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Collect service state
+      ansible.builtin.service_facts:
+
+    - name: Assert kea-ctrl-agent is stopped and disabled
+      ansible.builtin.assert:
+        that:
+          - ansible_facts.services['kea-ctrl-agent.service'].state != 'running'
+          - ansible_facts.services['kea-ctrl-agent.service'].status == 'disabled'
+
+    - name: The dhcp4 API answers on its own port
+      ansible.builtin.uri:
+        url: http://127.0.0.1:8004/
+        method: POST
+        url_username: admin
+        url_password: molecule-secret
+        force_basic_auth: true
+        body_format: json
+        body: { command: status-get }
+      register: status
+      failed_when: status.json[0].result != 0
+
+    - name: Nothing listens on kea-ctrl-agent's port any more
+      ansible.builtin.wait_for:
+        port: 8000
+        state: stopped
+        timeout: 10
+
+    - name: Read the firewall's open ports
+      ansible.builtin.command: firewall-cmd --zone public --list-ports
+      register: ports
+      changed_when: false
+
+    - name: Assert the firewall followed the API
+      ansible.builtin.assert:
+        that:
+          - "'8004/tcp' in ports.stdout"
+          - "'8000/tcp' not in ports.stdout"
+        fail_msg: "Open ports: {{ ports.stdout }}"
+
+    - name: Read kea-dhcp4's process ID before the change
+      ansible.builtin.slurp:
+        src: /root/kea-dhcp4.pid-before
+      register: pid_before
+
+    - name: Read kea-dhcp4's process ID now
+      ansible.builtin.systemd_service:
+        name: kea-dhcp4
+      register: unit_now
+
+    - name: Assert kea-dhcp4 was reloaded, not restarted
+      ansible.builtin.assert:
+        that: (pid_before.content | b64decode | trim) == (unit_now.status.MainPID | string)
+        fail_msg: >-
+          kea-dhcp4 was restarted (PID {{ pid_before.content | b64decode | trim }} ->
+          {{ unit_now.status.MainPID }})

@@ -30,6 +30,9 @@ provisioner:
       all:
         # Keep test containers from changing the host's kernel settings.
         kea_sysctl_manage: false
+        # Cover kea-ctrl-agent here; the default scenario uses the daemons'
+        # own API sockets.
+        kea_api_mode: ctrl_agent
 verifier:
   name: ansible
 scenario:

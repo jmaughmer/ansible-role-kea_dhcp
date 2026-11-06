@@ -1,0 +1,37 @@
+---
+# One sync run against the mock phpIPAM: set its data, run the sync, check
+# the outcome and the reservations Kea holds afterwards.
+- name: Set the mock phpIPAM data ({{ round_name }})
+  ansible.builtin.copy:
+    dest: /etc/mock-phpipam.json
+    content: "{{ phpipam_data }}"
+    mode: "0644"
+
+# systemctl's exit status tells whether the oneshot sync succeeded.
+- name: Run the sync ({{ round_name }})
+  ansible.builtin.command: systemctl start kea-phpipam-sync.service  # noqa: command-instead-of-module
+  register: sync
+  changed_when: true
+  failed_when: (sync.rc == 0) != expect_success
+
+- name: List the reservations in Kea subnet 1 ({{ round_name }})
+  ansible.builtin.uri:
+    url: https://127.0.0.1:8004/
+    method: POST
+    url_username: admin
+    url_password: molecule-secret
+    force_basic_auth: true
+    body_format: json
+    ca_path: /etc/kea/tls/ca.crt
+    client_cert: /etc/kea/tls/kea.crt
+    client_key: /etc/kea/tls/kea.key
+    body: { command: reservation-get-all, arguments: { subnet-id: 1 } }
+  register: kea_hosts
+  failed_when: kea_hosts.json[0].result not in [0, 3]
+
+- name: Assert the reservations ({{ round_name }})
+  ansible.builtin.assert:
+    that: macs | sort == expect_macs | sort
+    fail_msg: "Kea holds {{ macs }}, expected {{ expect_macs }}"
+  vars:
+    macs: "{{ kea_hosts.json[0].arguments.hosts | default([]) | map(attribute='hw-address') | list }}"

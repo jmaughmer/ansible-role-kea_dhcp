@@ -1,0 +1,10 @@
+---
+- name: Converge with kea-ctrl-agent serving the API
+  hosts: all
+  vars_files: [vars/shared.yml]
+  vars:
+    kea_api_mode: ctrl_agent
+  tasks:
+    - name: Include the role
+      ansible.builtin.include_role:
+        name: ansible-role-kea_dhcp

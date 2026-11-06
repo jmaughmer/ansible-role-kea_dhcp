@@ -25,7 +25,7 @@
   loop_control:
     label: "{{ item.user }}"
   no_log: true
-  notify: Restart kea-ctrl-agent
+  notify: Reload kea
 
 - name: Write the HA peer password file
   ansible.builtin.copy:
@@ -39,19 +39,32 @@
     - kea_ha_basic_auth_user | length > 0
   no_log: true
   notify:
-    - Restart kea-dhcp4
-    - Restart kea-dhcp6
+    - Reload kea-dhcp4
+    - Reload kea-dhcp6
 
-- name: Deploy API TLS material
-  when: kea_ctrl_agent_tls_enabled | bool
+# Certificates are read when a listener opens, so these restart Kea.
+- name: Deploy TLS material for the API and HA
+  when: __kea_tls_files | length > 0
+  vars:
+    __kea_tls_files: >-
+      {{ ((([{'content': kea_api_tls_cert_content, 'dest': kea_api_tls_cert_file, 'mode': '0644'},
+             {'content': kea_api_tls_key_content, 'dest': kea_api_tls_key_file, 'mode': '0640'},
+             {'content': kea_api_tls_ca_content, 'dest': kea_api_tls_ca_file, 'mode': '0644'}]
+            if kea_api_tls_enabled | bool else [])
+          + ([{'content': kea_ha_tls_cert_content, 'dest': kea_ha_tls_cert_file, 'mode': '0644'},
+              {'content': kea_ha_tls_key_content, 'dest': kea_ha_tls_key_file, 'mode': '0640'},
+              {'content': kea_ha_tls_ca_content, 'dest': kea_ha_tls_ca_file, 'mode': '0644'}]
+             if kea_ha_enabled | bool and kea_ha_tls_enabled | bool else []))
+         | selectattr('content', 'truthy') | list) }}
   block:
-    - name: Create the TLS directory
+    - name: Create the TLS directories
       ansible.builtin.file:
-        path: "{{ kea_ctrl_agent_tls_cert_file | dirname }}"
+        path: "{{ item }}"
         state: directory
         owner: root
         group: "{{ __kea_group }}"
         mode: "0750"
+      loop: "{{ __kea_tls_files | map(attribute='dest') | map('dirname') | unique }}"
 
     - name: Write TLS files
       ansible.builtin.copy:
@@ -60,18 +73,11 @@
         owner: root
         group: "{{ __kea_group }}"
         mode: "{{ item.mode }}"
-      loop:
-        - { content: "{{ kea_ctrl_agent_tls_cert_content }}", dest: "{{ kea_ctrl_agent_tls_cert_file }}", mode: "0644" }
-        - { content: "{{ kea_ctrl_agent_tls_key_content }}", dest: "{{ kea_ctrl_agent_tls_key_file }}", mode: "0640" }
-        - { content: "{{ kea_ctrl_agent_tls_ca_content }}", dest: "{{ kea_ctrl_agent_tls_ca_file }}", mode: "0644" }
+      loop: "{{ __kea_tls_files }}"
       loop_control:
         label: "{{ item.dest }}"
-      when: item.content | length > 0
       no_log: true
-      notify:
-        - Restart kea-ctrl-agent
-        - Restart kea-dhcp4
-        - Restart kea-dhcp6
+      notify: Restart kea
 
 - name: Configure Kerberos for GSS-TSIG
   when:
@@ -112,6 +118,8 @@
       notify: Restart kea-dhcp-ddns
 
 - name: Configure kea-dhcp4
+  # The file can hold database passwords and TSIG secrets; keep them out of --diff.
+  diff: false
   ansible.builtin.template:
     src: kea-dhcp4.conf.j2
     dest: "{{ kea_config_dir }}/kea-dhcp4.conf"
@@ -120,9 +128,11 @@
     mode: "0640"
     validate: "{{ 'kea-dhcp4 -t %s' if kea_validate_config | bool else omit }}"
   when: kea_dhcp4_enabled | bool
-  notify: Restart kea-dhcp4
+  notify: Reload kea-dhcp4
 
 - name: Configure kea-dhcp6
+  # The file can hold database passwords and TSIG secrets; keep them out of --diff.
+  diff: false
   ansible.builtin.template:
     src: kea-dhcp6.conf.j2
     dest: "{{ kea_config_dir }}/kea-dhcp6.conf"
@@ -131,9 +141,11 @@
     mode: "0640"
     validate: "{{ 'kea-dhcp6 -t %s' if kea_validate_config | bool else omit }}"
   when: kea_dhcp6_enabled | bool
-  notify: Restart kea-dhcp6
+  notify: Reload kea-dhcp6
 
 - name: Configure kea-dhcp-ddns
+  # The file can hold database passwords and TSIG secrets; keep them out of --diff.
+  diff: false
   ansible.builtin.template:
     src: kea-dhcp-ddns.conf.j2
     dest: "{{ kea_config_dir }}/kea-dhcp-ddns.conf"
@@ -142,7 +154,7 @@
     mode: "0640"
     validate: "{{ 'kea-dhcp-ddns -t %s' if kea_validate_config | bool else omit }}"
   when: kea_ddns_enabled | bool
-  notify: Restart kea-dhcp-ddns
+  notify: Reload kea-dhcp-ddns
 
 - name: Configure kea-ctrl-agent
   ansible.builtin.template:
@@ -152,5 +164,5 @@
     group: "{{ __kea_group }}"
     mode: "0640"
     validate: "{{ 'kea-ctrl-agent -t %s' if kea_validate_config | bool else omit }}"
-  when: kea_ctrl_agent_enabled | bool
-  notify: Restart kea-ctrl-agent
+  when: __kea_ctrl_agent_active | bool
+  notify: Reload kea-ctrl-agent

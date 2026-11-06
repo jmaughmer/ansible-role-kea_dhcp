@@ -3,7 +3,13 @@
   hosts: all
   gather_facts: false
   vars:
-    api_url: http://127.0.0.1:8000/
+    # The el8 scenario sets kea_api_mode: ctrl_agent to cover kea-ctrl-agent.
+    ctrl_agent: "{{ (kea_api_mode | default('auto')) == 'ctrl_agent' }}"
+    api_urls: >-
+      {{ {'dhcp4': 'http://127.0.0.1:8000/', 'dhcp6': 'http://127.0.0.1:8000/', 'd2': 'http://127.0.0.1:8000/'}
+         if ctrl_agent | bool else
+         {'dhcp4': 'http://127.0.0.1:8004/', 'dhcp6': 'http://127.0.0.1:8006/', 'd2': 'http://127.0.0.1:8053/'} }}
+    kea_daemons: "{{ ['kea-dhcp4', 'kea-dhcp6', 'kea-dhcp-ddns'] + (['kea-ctrl-agent'] if ctrl_agent | bool else []) }}"
     api_user: admin
     api_password: molecule-secret
   tasks:
@@ -14,7 +20,13 @@
       ansible.builtin.assert:
         that: ansible_facts.services[item ~ '.service'].state == 'running'
         fail_msg: "{{ item }} is not running"
-      loop: [kea-dhcp4, kea-dhcp6, kea-dhcp-ddns, kea-ctrl-agent]
+      loop: "{{ kea_daemons }}"
+
+    - name: Assert kea-ctrl-agent is stopped when the daemons serve the API
+      ansible.builtin.assert:
+        that: ansible_facts.services['kea-ctrl-agent.service'].state | default('stopped') != 'running'
+        fail_msg: kea-ctrl-agent is running although the daemons serve the API
+      when: not ctrl_agent | bool
 
     - name: Re-check configuration files
       ansible.builtin.command: "{{ item.bin }} -t /etc/kea/{{ item.conf }}"
@@ -23,11 +35,12 @@
         - { bin: kea-dhcp6, conf: kea-dhcp6.conf }
         - { bin: kea-dhcp-ddns, conf: kea-dhcp-ddns.conf }
         - { bin: kea-ctrl-agent, conf: kea-ctrl-agent.conf }
+      when: item.bin in kea_daemons
       changed_when: false
 
     - name: API rejects requests without credentials
       ansible.builtin.uri:
-        url: "{{ api_url }}"
+        url: "{{ api_urls.dhcp4 }}"
         method: POST
         body_format: json
         body: { command: status-get, service: [dhcp4] }
@@ -35,7 +48,7 @@
 
     - name: Query every daemon through the API
       ansible.builtin.uri:
-        url: "{{ api_url }}"
+        url: "{{ api_urls[item] }}"
         method: POST
         url_username: "{{ api_user }}"
         url_password: "{{ api_password }}"
@@ -48,7 +61,7 @@
 
     - name: Fetch the running DHCPv4 configuration
       ansible.builtin.uri:
-        url: "{{ api_url }}"
+        url: "{{ api_urls.dhcp4 }}"
         method: POST
         url_username: "{{ api_user }}"
         url_password: "{{ api_password }}"
@@ -88,11 +101,19 @@
           - subnet2['renew-timer'] == 43200
           - subnet2['rebind-timer'] == 75600
           - not subnet2['user-context']['enable-ping-check']
+          - "'192.0.2.124' in (dhcp4['option-data'] | selectattr('name', 'equalto', 'ntp-servers') | first)['data']"
+          - subnet2_ntp['data'] == '198.51.100.1'
+          - subnet2_ntp['always-send']
+          - "'domain-search' in dhcp4['option-data'] | map(attribute='name') | list"
+          - >-
+            subnet2['option-data'] | map(attribute='name') | list
+            is superset(['routers', 'domain-name-servers', 'domain-name', 'domain-search'])
       vars:
         dhcp4: "{{ config4.json[0].arguments.Dhcp4 }}"
         libraries: "{{ dhcp4['hooks-libraries'] | map(attribute='library') | map('basename') | list }}"
         ping: "{{ dhcp4['hooks-libraries'][libraries.index('libdhcp_ping_check.so')] }}"
         subnet2: "{{ dhcp4.subnet4 | selectattr('id', 'equalto', 2) | first }}"
+        subnet2_ntp: "{{ subnet2['option-data'] | selectattr('name', 'equalto', 'ntp-servers') | first }}"
 
     - name: Read kea-dhcp4's effective capabilities
       ansible.builtin.shell:
@@ -109,7 +130,7 @@
 
     - name: Fetch the running DHCPv6 and DDNS configurations
       ansible.builtin.uri:
-        url: "{{ api_url }}"
+        url: "{{ api_urls[item] }}"
         method: POST
         url_username: "{{ api_user }}"
         url_password: "{{ api_password }}"
@@ -130,6 +151,14 @@
           - subnet2['max-preferred-lifetime'] == 86400
           - subnet2['renew-timer'] == 21600
           - subnet2['rebind-timer'] == 34560
+          - "'2001:db8::124' in (dhcp6['option-data'] | selectattr('name', 'equalto', 'sntp-servers') | first)['data']"
+          - dhcp6['option-data'] | selectattr('name', 'equalto', 'ntp-server') | list | length == 1
+          - >-
+            dhcp6['option-data'] | map(attribute='name') | list
+            is superset(['dns-servers', 'domain-search'])
+          - >-
+            (dhcp6['option-data'] | selectattr('name', 'equalto', 'ntp-server-address') | first)['space']
+            == 'v6-ntp-server-suboptions'
           - "'::1' in d2['forward-ddns']['ddns-domains'][0]['dns-servers'] | map(attribute='ip-address') | list"
           - v6zone['dns-servers'] | length == 1
           - v6zone['dns-servers'][0]['ip-address'] == '::1'
@@ -144,7 +173,7 @@
 
     - name: Look up a DHCPv4 reservation through host_cmds
       ansible.builtin.uri:
-        url: "{{ api_url }}"
+        url: "{{ api_urls.dhcp4 }}"
         method: POST
         url_username: "{{ api_user }}"
         url_password: "{{ api_password }}"
@@ -159,7 +188,7 @@
 
     - name: Look up a DHCPv6 reservation through host_cmds
       ansible.builtin.uri:
-        url: "{{ api_url }}"
+        url: "{{ api_urls.dhcp6 }}"
         method: POST
         url_username: "{{ api_user }}"
         url_password: "{{ api_password }}"
@@ -174,7 +203,7 @@
 
     - name: Add and fetch a lease through lease_cmds
       ansible.builtin.uri:
-        url: "{{ api_url }}"
+        url: "{{ api_urls.dhcp4 }}"
         method: POST
         url_username: "{{ api_user }}"
         url_password: "{{ api_password }}"
@@ -199,7 +228,7 @@
         path: "/var/log/kea/{{ item }}"
       register: logs
       failed_when: not logs.stat.exists
-      loop: [kea-dhcp4.log, kea-dhcp6.log, kea-dhcp-ddns.log, kea-ctrl-agent.log]
+      loop: "{{ kea_daemons | map('regex_replace', '$', '.log') | list }}"
 
     - name: Check the systemd tuning drop-in is applied
       ansible.builtin.systemd_service:
@@ -223,3 +252,52 @@
         that: >-
           '/usr/local/bin/kea-molecule-helper ' ~ helper.stat.size ~ ' ' ~ helper.stat.checksum
           in (trust.content | b64decode)
+
+    - name: Start a non-Kea listener on a spare port
+      ansible.builtin.shell: setsid nohup python3 -m http.server 8099 --bind 127.0.0.1 >/dev/null 2>&1 & echo $!
+      changed_when: false
+      register: dummy_listener
+
+    - name: Wait for the listener
+      ansible.builtin.wait_for:
+        port: 8099
+        host: 127.0.0.1
+        timeout: 30
+
+    - name: The port check refuses a port another service holds
+      block:
+        - name: Run the role's port check with the dhcp4 API on that port
+          ansible.builtin.include_role:
+            name: ansible-role-kea_dhcp
+            tasks_from: ports.yml
+          vars:
+            __kea_api_daemon: true
+            kea_api_dhcp4_port: 8099
+
+        - name: The check should not have passed
+          ansible.builtin.fail:
+            msg: The port check missed the listener on 8099
+
+      rescue:
+        - name: Assert the check named the busy port
+          ansible.builtin.assert:
+            that:
+              - "'already in use' in ansible_failed_result.msg"
+              - "':8099' in ansible_failed_result.msg"
+            fail_msg: "Unexpected failure: {{ ansible_failed_result.msg | default(ansible_failed_result) }}"
+
+      always:
+        - name: Stop the listener
+          ansible.builtin.command: kill {{ dummy_listener.stdout }}
+          changed_when: false
+          failed_when: false
+
+    - name: The port check passes for Kea's own listeners
+      ansible.builtin.include_role:
+        name: ansible-role-kea_dhcp
+        tasks_from: ports.yml
+      vars:
+        __kea_api_daemon: "{{ not ctrl_agent | bool }}"
+        __kea_ctrl_agent_active: "{{ ctrl_agent | bool }}"
+        kea_dhcp6_enabled: true
+        kea_ddns_enabled: true

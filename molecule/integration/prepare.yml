@@ -1,0 +1,79 @@
+---
+- name: Prepare
+  hosts: all
+  vars:
+    pki: /root/pki
+  tasks:
+    - name: Install MariaDB and openssl
+      ansible.builtin.dnf:
+        name: [mariadb-server, openssl]
+        state: present
+
+    - name: Start MariaDB
+      ansible.builtin.systemd_service:
+        name: mariadb
+        state: started
+        enabled: true
+
+    # Two databases, so kea_db_init has more than the hosts database to set up.
+    - name: Create the Kea databases and user
+      ansible.builtin.command:
+        argv:
+          - mysql
+          - -e
+          - >-
+            CREATE DATABASE IF NOT EXISTS kea_hosts; CREATE DATABASE IF NOT EXISTS kea_leases;
+            CREATE USER IF NOT EXISTS 'kea'@'127.0.0.1' IDENTIFIED BY 'Molecule-db-pass-1';
+            GRANT ALL ON kea_hosts.* TO 'kea'@'127.0.0.1'; GRANT ALL ON kea_leases.* TO 'kea'@'127.0.0.1';
+      changed_when: true
+
+    - name: Create the PKI directory
+      ansible.builtin.file:
+        path: "{{ pki }}"
+        state: directory
+        mode: "0700"
+
+    # One certificate for the API server and, as a client, for the sync.
+    - name: Make a test CA and a certificate for 127.0.0.1
+      ansible.builtin.shell:
+        cmd: |
+          set -e
+          cd {{ pki }}
+          openssl req -x509 -newkey rsa:2048 -nodes -keyout ca.key -out ca.crt -days 30 -subj /CN=kea-test-ca 2>/dev/null
+          openssl req -newkey rsa:2048 -nodes -keyout kea.key -out kea.csr -subj /CN=localhost 2>/dev/null
+          printf 'subjectAltName=IP:127.0.0.1,DNS:localhost\nextendedKeyUsage=serverAuth,clientAuth\n' > ext.cnf
+          openssl x509 -req -in kea.csr -CA ca.crt -CAkey ca.key -CAcreateserial -out kea.crt -days 30 \
+            -extfile ext.cnf 2>/dev/null
+        creates: "{{ pki }}/kea.crt"
+
+    - name: Install the mock phpIPAM API
+      ansible.builtin.copy:
+        src: mock-phpipam.py
+        dest: /usr/local/bin/mock-phpipam
+        mode: "0755"
+
+    - name: Give it two addresses in subnet 7
+      ansible.builtin.copy:
+        dest: /etc/mock-phpipam.json
+        content: >-
+          {"subnets": {"7": [
+          {"ip": "192.0.2.21", "mac": "aa:bb:cc:00:00:21", "hostname": "host21"},
+          {"ip": "192.0.2.22", "mac": "AA-BB-CC-00-00-22", "hostname": "host22"}]}}
+        mode: "0644"
+
+    - name: Install the mock phpIPAM unit
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/mock-phpipam.service
+        content: |
+          [Service]
+          ExecStart=/usr/local/bin/mock-phpipam
+          [Install]
+          WantedBy=multi-user.target
+        mode: "0644"
+
+    - name: Start the mock phpIPAM API
+      ansible.builtin.systemd_service:
+        name: mock-phpipam
+        state: started
+        enabled: true
+        daemon_reload: true

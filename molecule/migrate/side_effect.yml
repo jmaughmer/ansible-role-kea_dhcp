@@ -1,0 +1,21 @@
+---
+- name: Move the API to the daemons
+  hosts: all
+  vars_files: [vars/shared.yml]
+  vars:
+    kea_api_mode: auto
+  tasks:
+    - name: Read kea-dhcp4's process ID before the change
+      ansible.builtin.systemd_service:
+        name: kea-dhcp4
+      register: unit_before
+
+    - name: Keep it for verify.yml
+      ansible.builtin.copy:
+        content: "{{ unit_before.status.MainPID }}"
+        dest: /root/kea-dhcp4.pid-before
+        mode: "0600"
+
+    - name: Include the role
+      ansible.builtin.include_role:
+        name: ansible-role-kea_dhcp

@@ -1,0 +1,47 @@
+---
+# Collections are installed by scripts/test.sh, pinned per ansible-core.
+dependency:
+  name: galaxy
+  enabled: false
+driver:
+  name: podman
+# Names end in TEST_RUN_ID, which scripts/test.sh sets per checkout, so
+# several checkouts can run the same scenario at once.
+platforms:
+  - name: kea-migrate-${TEST_RUN_ID:-local}
+    image: docker.io/almalinux/10-init
+    pre_build_image: true
+    command: /sbin/init
+    systemd: always
+    privileged: true
+    rootless: true
+# An existing host moving from kea-ctrl-agent to the daemons' own API
+# sockets: converge with kea_api_mode ctrl_agent, then side_effect.yml runs
+# the role again with auto.
+provisioner:
+  name: ansible
+  playbooks:
+    prepare: prepare.yml
+    converge: converge.yml
+    side_effect: side_effect.yml
+    verify: verify.yml
+  env:
+    ANSIBLE_ROLES_PATH: "${MOLECULE_PROJECT_DIRECTORY}/.."
+  inventory:
+    group_vars:
+      all:
+        # Keep test containers from changing the host's kernel settings.
+        kea_sysctl_manage: false
+verifier:
+  name: ansible
+scenario:
+  test_sequence:
+    - destroy
+    - syntax
+    - create
+    - prepare
+    - converge
+    - idempotence
+    - side_effect
+    - verify
+    - destroy

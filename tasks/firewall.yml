@@ -17,11 +17,55 @@
         state: enabled
       loop: "{{ (['dhcp'] if kea_dhcp4_enabled | bool else []) + (['dhcpv6'] if kea_dhcp6_enabled | bool else []) }}"
 
-    - name: Allow API and HA ports
+    - name: Open the API and HA ports to the zone
       ansible.posix.firewalld:
         port: "{{ item }}/tcp"
         zone: "{{ kea_firewalld_zone }}"
         permanent: true
         immediate: true
         state: enabled
-      loop: "{{ __kea_tcp_ports }}"
+      loop: "{{ __kea_firewall_open_ports }}"
+
+    - name: Accept HA traffic from the peers only
+      ansible.posix.firewalld:
+        rich_rule: "{{ item }}"
+        zone: "{{ kea_firewalld_zone }}"
+        permanent: true
+        immediate: true
+        state: enabled
+      loop: "{{ __kea_firewall_rich_rules }}"
+
+    - name: Remove what Kea no longer needs
+      when: kea_firewalld_remove_stale | bool
+      block:
+        - name: Close Kea ports that are no longer used
+          ansible.posix.firewalld:
+            port: "{{ item }}/tcp"
+            zone: "{{ kea_firewalld_zone }}"
+            permanent: true
+            immediate: true
+            state: disabled
+          # A port another service now listens on stays as it is.
+          loop: >-
+            {{ __kea_known_tcp_ports | difference(__kea_firewall_open_ports)
+               | difference(__kea_foreign_tcp_ports | default([])) }}
+
+        - name: Read the zone's rich rules
+          ansible.builtin.command: firewall-cmd --permanent --zone {{ kea_firewalld_zone }} --list-rich-rules
+          register: __kea_rich_rules
+          changed_when: false
+          check_mode: false
+
+        # Only rules for one of Kea's ports, in the form the role writes.
+        - name: Remove Kea rich rules that are no longer wanted
+          ansible.posix.firewalld:
+            rich_rule: "{{ item }}"
+            zone: "{{ kea_firewalld_zone }}"
+            permanent: true
+            immediate: true
+            state: disabled
+          loop: >-
+            {{ __kea_rich_rules.stdout_lines
+               | select('match', '^rule family="ipv[46]" source address="[^"]+" port port="('
+                        ~ (__kea_known_tcp_ports | join('|')) ~ ')" protocol="tcp" accept$')
+               | reject('in', __kea_firewall_rich_rules) | list }}

@@ -1,0 +1,55 @@
+---
+- name: Converge
+  hosts: all
+  vars:
+    kea_dhcp4_interfaces: ["*"]
+    kea_dhcp4_subnets:
+      - id: 1
+        subnet: 192.0.2.0/24
+        pools: [{ pool: 192.0.2.100 - 192.0.2.200 }]
+    kea_api_users:
+      - { user: admin, password: molecule-secret }
+    # HTTPS that also requires a client certificate.
+    kea_api_tls_enabled: true
+    kea_api_tls_cert_required: true
+    kea_api_tls_cert_content: "{{ pem['kea.crt'] }}"
+    kea_api_tls_key_content: "{{ pem['kea.key'] }}"
+    kea_api_tls_ca_content: "{{ pem['ca.crt'] }}"
+    # Leases and reservations in MariaDB, in two databases.
+    kea_hosts_database:
+      type: mysql
+      name: kea_hosts
+      host: 127.0.0.1
+      user: kea
+      password: Molecule-db-pass-1
+    kea_dhcp4_lease_database:
+      type: mysql
+      name: kea_leases
+      host: 127.0.0.1
+      user: kea
+      password: Molecule-db-pass-1
+    kea_db_init: true
+    # The sync, against the mock phpIPAM from prepare.yml.
+    kea_phpipam_sync_enabled: true
+    kea_phpipam_url: http://127.0.0.1:8080
+    kea_phpipam_token: mock-token
+    kea_phpipam_subnet_map:
+      - { phpipam_subnet_id: 7, kea_subnet_id: 1, family: 4 }
+    # verify.yml runs the sync itself.
+    kea_phpipam_sync_interval: 1d
+  pre_tasks:
+    - name: Read the test certificates
+      ansible.builtin.slurp:
+        src: "/root/pki/{{ item }}"
+      loop: [ca.crt, kea.crt, kea.key]
+      register: pki
+      no_log: true
+
+    - name: Keep them for the role
+      ansible.builtin.set_fact:
+        pem: "{{ dict(pki.results | map(attribute='item') | zip(pki.results | map(attribute='content') | map('b64decode'))) }}"
+      no_log: true
+  tasks:
+    - name: Include the role
+      ansible.builtin.include_role:
+        name: ansible-role-kea_dhcp

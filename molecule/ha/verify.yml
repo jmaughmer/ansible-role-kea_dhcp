@@ -1,4 +1,6 @@
 ---
+# Shared by the ha (hot-standby), ha-lb (load-balancing) and ha-backup
+# (passive-backup) scenarios; kea_ha_mode comes from their inventories.
 - name: Verify HA
   hosts: kea_cluster
   gather_facts: false
@@ -6,50 +8,96 @@
     # Host names carry a per-checkout suffix (see molecule.yml).
     primary: "{{ (groups['kea_cluster'] | sort)[0] }}"
     standby: "{{ (groups['kea_cluster'] | sort)[1] }}"
+    # The state a healthy pair settles in, per mode.
+    normal_state: "{{ kea_ha_mode }}"
     api: &api
-      url: http://127.0.0.1:8000/
+      # HA uses its dedicated listener, so kea-dhcp4 serves the API itself.
+      url: http://127.0.0.1:8004/
       method: POST
       url_username: admin
       url_password: molecule-secret
       force_basic_auth: true
       body_format: json
   tasks:
-    - name: Wait for both servers to reach hot-standby
+    - name: Fetch the running DHCPv4 configuration
       ansible.builtin.uri:
         <<: *api
-        body: { command: ha-heartbeat, service: [dhcp4] }
+        body: { command: config-get }
+      register: config4
+
+    - name: Assert HA peers talk over HTTPS with client certificates
+      ansible.builtin.assert:
+        that:
+          - ha.peers | map(attribute='url') | select('match', '^https://') | list | length == 2
+          - ha['trust-anchor'] | length > 0
+          - ha['require-client-certs']
+      vars:
+        ha: >-
+          {{ (config4.json[0].arguments.Dhcp4['hooks-libraries']
+              | selectattr('library', 'search', 'libdhcp_ha.so') | first).parameters['high-availability'][0] }}
+
+    - name: Read the firewall's ports and rich rules
+      ansible.builtin.command: firewall-cmd --zone public {{ item }}
+      loop: [--list-ports, --list-rich-rules]
+      register: fw
+      changed_when: false
+
+    - name: Assert the HA port is open to the peers only
+      ansible.builtin.assert:
+        that:
+          - "'8001/tcp' not in fw.results[0].stdout"
+          # One rule per peer address, for the DHCPv4 listener.
+          - fw.results[1].stdout_lines | select('search', 'port port="8001"') | list | length == 2
+
+    - name: Wait for the pair to reach {{ normal_state }}
+      ansible.builtin.uri:
+        <<: *api
+        body: { command: ha-heartbeat }
       register: hb
-      until: hb.json[0].arguments.state | default('') == 'hot-standby'
+      until: hb.json[0].arguments.state | default('') == normal_state
       retries: 30
       delay: 2
+      when: inventory_hostname == primary or kea_ha_mode != 'passive-backup'
 
-    - name: Stop DHCPv4 on the primary
-      ansible.builtin.systemd_service:
-        name: kea-dhcp4
-        state: stopped
-      when: inventory_hostname == primary
-
-    - name: Standby takes over (partner-down)
+    - name: Check the backup server's role
       ansible.builtin.uri:
         <<: *api
-        body: { command: ha-heartbeat, service: [dhcp4] }
-      register: hb
-      until: hb.json[0].arguments.state | default('') == 'partner-down'
-      retries: 30
-      delay: 2
-      when: inventory_hostname == standby
+        body: { command: status-get }
+      register: status
+      failed_when: >-
+        status.json[0].arguments['high-availability'][0]['ha-servers']['local']['role'] != 'backup'
+      when: kea_ha_mode == 'passive-backup' and inventory_hostname == standby
 
-    - name: Start DHCPv4 on the primary again
-      ansible.builtin.systemd_service:
-        name: kea-dhcp4
-        state: started
-      when: inventory_hostname == primary
+    - name: Failover and recovery
+      when: kea_ha_mode != 'passive-backup'
+      block:
+        - name: Stop DHCPv4 on the primary
+          ansible.builtin.systemd_service:
+            name: kea-dhcp4
+            state: stopped
+          when: inventory_hostname == primary
 
-    - name: Cluster returns to hot-standby
-      ansible.builtin.uri:
-        <<: *api
-        body: { command: ha-heartbeat, service: [dhcp4] }
-      register: hb
-      until: hb.json[0].arguments.state | default('') == 'hot-standby'
-      retries: 45
-      delay: 2
+        - name: The partner takes over (partner-down)
+          ansible.builtin.uri:
+            <<: *api
+            body: { command: ha-heartbeat }
+          register: hb
+          until: hb.json[0].arguments.state | default('') == 'partner-down'
+          retries: 30
+          delay: 2
+          when: inventory_hostname == standby
+
+        - name: Start DHCPv4 on the primary again
+          ansible.builtin.systemd_service:
+            name: kea-dhcp4
+            state: started
+          when: inventory_hostname == primary
+
+        - name: The pair returns to {{ normal_state }}
+          ansible.builtin.uri:
+            <<: *api
+            body: { command: ha-heartbeat }
+          register: hb
+          until: hb.json[0].arguments.state | default('') == normal_state
+          retries: 45
+          delay: 2

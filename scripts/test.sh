@@ -5,7 +5,8 @@
 # Rootless podman is used by default; if rootless systemd containers don't
 # work on your WSL setup, run the script with sudo for rootful podman.
 #
-# Usage: scripts/test.sh [lint|default|ha|el8|all ...]   (default: all)
+# Usage: scripts/test.sh [TARGET ...]   (default: all)
+#   lint, default, ha, ha-lb, ha-backup, el8, migrate, integration, distro, all
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -75,7 +76,8 @@ run_scenario() { # <venv> <scenario>
 main() {
   local targets=("$@")
   ((${#targets[@]})) || targets=(all)
-  [[ " ${targets[*]} " == *" all "* ]] && targets=(lint default ha el8)
+  [[ " ${targets[*]} " == *" all "* ]] &&
+    targets=(lint default ha ha-lb ha-backup el8 migrate integration distro)
 
   check_host
   make_venv "$VENV" "ansible-core ansible-lint yamllint" -r "$ROOT/requirements.yml"
@@ -88,9 +90,9 @@ main() {
   for t in "${targets[@]}"; do
     case "$t" in
       lint) run_lint || failed+=("$t") ;;
-      default|ha) run_scenario "$VENV" "$t" || failed+=("$t") ;;
+      default|ha|ha-lb|ha-backup|migrate|integration|distro) run_scenario "$VENV" "$t" || failed+=("$t") ;;
       el8) run_scenario "$VENV_EL8" el8 || failed+=("$t") ;;
-      *) die "unknown target: $t (expected lint, default, ha, el8 or all)" ;;
+      *) die "unknown target: $t (expected lint, default, ha, ha-lb, ha-backup, el8, migrate, integration, distro or all)" ;;
     esac
   done
 

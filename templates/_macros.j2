@@ -76,7 +76,7 @@
 {%- set url = peer.url -%}
 {%- else -%}
 {%- set host = '[' ~ peer.address ~ ']' if ':' in (peer.address | string) else peer.address -%}
-{%- set url = 'http://' ~ host ~ ':' ~ ((port if kea_ha_dedicated_listener | bool else kea_ctrl_agent_port) | string) ~ '/' -%}
+{%- set url = ('https' if kea_ha_tls_enabled | bool else 'http') ~ '://' ~ host ~ ':' ~ ((port if kea_ha_dedicated_listener | bool else kea_ctrl_agent_port) | string) ~ '/' -%}
 {%- endif -%}
 {%- set p = {"name": peer.name, "url": url, "role": peer.role} -%}
 {%- if peer.role != 'backup' -%}
@@ -108,6 +108,10 @@
   },
   "peers": peers
 } -%}
+{#- TLS for both directions: the listener and the connections to peers. -#}
+{%- if kea_ha_tls_enabled | bool -%}
+{%- set rel = rel | combine({"trust-anchor": kea_ha_tls_ca_file, "cert-file": kea_ha_tls_cert_file, "key-file": kea_ha_tls_key_file, "require-client-certs": kea_ha_tls_require_client_certs | bool}) -%}
+{%- endif -%}
 {%- if kea_ha_mode == 'load-balancing' and kea_ha_delayed_updates_limit | int > 0 -%}
 {%- set rel = rel | combine({"delayed-updates-limit": kea_ha_delayed_updates_limit | int}) -%}
 {%- endif -%}
@@ -190,4 +194,31 @@
 {%- endfor -%}
 {%- endif -%}
 {{ classes | to_json }}
+{%- endmacro -%}
+
+{#- Basic auth and TLS for the API, shared by kea-ctrl-agent and the daemons'
+    own HTTP sockets. -#}
+{%- macro api_http_settings() -%}
+{%- set cfg = {} -%}
+{%- if kea_api_users | length > 0 -%}
+{%- set clients = [] -%}
+{%- for u in kea_api_users -%}{%- set _ = clients.append({"user": u.user, "password-file": "kea-api-password-" ~ u.user}) -%}{%- endfor -%}
+{%- set cfg = cfg | combine({"authentication": {"type": "basic", "realm": kea_api_auth_realm, "directory": kea_config_dir, "clients": clients}}) -%}
+{%- endif -%}
+{%- if kea_api_tls_enabled | bool -%}
+{%- set cfg = cfg | combine({"trust-anchor": kea_api_tls_ca_file, "cert-file": kea_api_tls_cert_file, "key-file": kea_api_tls_key_file, "cert-required": kea_api_tls_cert_required | bool}) -%}
+{%- endif -%}
+{{ cfg | to_json }}
+{%- endmacro -%}
+
+{#- A daemon's control sockets: always the local UNIX socket, plus an HTTP(S)
+    API socket when the daemons serve the API (Kea 2.7.2+). -#}
+{%- macro control_sockets(unix_path, port) -%}
+{%- set unix = {"socket-type": "unix", "socket-name": unix_path} -%}
+{%- if __kea_api_daemon | default(false) | bool -%}
+{%- set http = {"socket-type": "https" if kea_api_tls_enabled | bool else "http", "socket-address": kea_api_host, "socket-port": port | int} | combine(api_http_settings() | from_json) -%}
+{{ {"control-sockets": [unix, http]} | to_json }}
+{%- else -%}
+{{ {"control-socket": unix} | to_json }}
+{%- endif -%}
 {%- endmacro -%}

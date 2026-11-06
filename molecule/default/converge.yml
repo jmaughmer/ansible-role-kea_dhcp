@@ -4,12 +4,23 @@
   vars:
     kea_dhcp6_enabled: true
     kea_ddns_enabled: true
-    kea_extra_packages: [isc-kea-perfdhcp]
+    # The distro scenario reuses this play; perfdhcp is an ISC package.
+    kea_extra_packages: "{{ ['isc-kea-perfdhcp'] if (kea_install_source | default('isc')) == 'isc' else [] }}"
+    kea_dhcp4_interfaces: ["*"]
+    kea_dhcp6_interfaces: ["*"]
     kea_api_users:
       - { user: admin, password: molecule-secret }
     kea_dhcp4_option_data:
       - { name: domain-name-servers, data: "192.0.2.53, 192.0.2.54" }
       - { name: domain-name, data: corp.example.com }
+      - { name: domain-search, data: "corp.example.com, example.com" }
+      - { name: ntp-servers, data: "192.0.2.123, 192.0.2.124" }
+    kea_dhcp6_option_data:
+      - { name: dns-servers, data: "2001:db8::53, 2001:db8::54" }
+      - { name: domain-search, data: "corp.example.com, example.com" }
+      - { name: sntp-servers, data: "2001:db8::123, 2001:db8::124" }
+      - { name: ntp-server }
+      - { name: ntp-server-address, space: v6-ntp-server-suboptions, data: "2001:db8::123" }
     kea_dhcp4_subnets:
       - id: 1
         subnet: 192.0.2.0/24
@@ -29,6 +40,12 @@
         renew-timer: 43200
         rebind-timer: 75600
         user-context: { enable-ping-check: false }
+        option-data:
+          - { name: routers, data: 198.51.100.1 }
+          - { name: domain-name-servers, data: 198.51.100.53 }
+          - { name: domain-name, data: site2.corp.example.com }
+          - { name: domain-search, data: "site2.corp.example.com, corp.example.com" }
+          - { name: ntp-servers, data: 198.51.100.1, always-send: true }
     kea_dhcp4_min_valid_lifetime: 2000
     kea_dhcp4_max_valid_lifetime: 8000
     kea_dhcp4_offer_lifetime: 60
