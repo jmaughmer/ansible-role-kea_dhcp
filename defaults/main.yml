@@ -355,9 +355,26 @@ kea_api_tls_cert_file: "{{ kea_ctrl_agent_tls_cert_file | default(kea_config_dir
 kea_api_tls_key_file: "{{ kea_ctrl_agent_tls_key_file | default(kea_config_dir ~ '/tls/kea.key') }}"
 kea_api_tls_ca_file: "{{ kea_ctrl_agent_tls_ca_file | default(kea_config_dir ~ '/tls/ca.crt') }}"
 kea_api_tls_cert_required: "{{ kea_ctrl_agent_tls_cert_required | default(false) }}"
-# Optional PEM content to deploy to the paths above (vault these).
-kea_api_tls_cert_content: "{{ kea_ctrl_agent_tls_cert_content | default('') }}"
-kea_api_tls_key_content: "{{ kea_ctrl_agent_tls_key_content | default('') }}"
+# Certificates and keys, in the same list the Apache, phpIPAM and MariaDB roles
+# read. Each entry in use is written to <kea_config_dir>/tls/<name>.crt and
+# <name>.key (root:kea 0640), and the *_cert_file and *_key_file paths link to
+# them. Put any intermediate certificates in certificate.content, after the
+# server certificate. Keep the keys in Ansible Vault, without a passphrase. Leave
+# the list empty if something else puts the files at those paths.
+# - name: "{{ ansible_facts['fqdn'] }}"
+#   certificate:
+#     content: |
+#       -----BEGIN CERTIFICATE-----
+#       ...
+#       -----END CERTIFICATE-----
+#   key:
+#     content: !vault |
+#       $ANSIBLE_VAULT;1.1;AES256
+#       ...
+ssl_certificates: []
+# Entry the API uses. Empty: the entry named after the host's FQDN, else the first.
+kea_api_tls_certificate: ""
+# Optional PEM content to deploy to kea_api_tls_ca_file.
 kea_api_tls_ca_content: "{{ kea_ctrl_agent_tls_ca_content | default('') }}"
 
 # Load the hooks that make up the management API.
@@ -493,9 +510,10 @@ kea_ha_tls_enabled: false
 kea_ha_tls_cert_file: "{{ kea_api_tls_cert_file }}"
 kea_ha_tls_key_file: "{{ kea_api_tls_key_file }}"
 kea_ha_tls_ca_file: "{{ kea_api_tls_ca_file }}"
-# PEM content to deploy to those paths when they differ from the API's.
-kea_ha_tls_cert_content: ""
-kea_ha_tls_key_content: ""
+# Entry in ssl_certificates HA uses. If it differs from the API's, also give HA
+# its own kea_ha_tls_cert_file and kea_ha_tls_key_file.
+kea_ha_tls_certificate: "{{ kea_api_tls_certificate }}"
+# PEM content to deploy to kea_ha_tls_ca_file when it differs from the API's.
 kea_ha_tls_ca_content: ""
 # The listener rejects peers without a certificate signed by the CA.
 kea_ha_tls_require_client_certs: true

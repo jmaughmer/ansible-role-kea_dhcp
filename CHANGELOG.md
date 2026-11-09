@@ -4,6 +4,7 @@
 
 ### Upgrade notes (action needed)
 
+- **TLS certificates and keys come from `ssl_certificates`,** the list the Apache, phpIPAM and MariaDB roles also read. It replaces `kea_api_tls_cert_content`, `kea_api_tls_key_content`, `kea_ha_tls_cert_content`, `kea_ha_tls_key_content` and the `kea_ctrl_agent_tls_cert_content` and `_key_content` names. A run that still sets one of them fails and says so. CAs stay in `kea_api_tls_ca_content` and `kea_ha_tls_ca_content`. Files you put at `kea_api_tls_cert_file` and `kea_api_tls_key_file` yourself keep working while the list is empty.
 - **API endpoints move off kea-ctrl-agent on Kea 2.7.2 and newer.** ISC deprecated kea-ctrl-agent, and with the default `kea_api_mode: auto` each daemon now serves the REST API itself:
 
   | Daemon | New port |

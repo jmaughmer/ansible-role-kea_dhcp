@@ -12,9 +12,13 @@
     # HTTPS that also requires a client certificate.
     kea_api_tls_enabled: true
     kea_api_tls_cert_required: true
-    kea_api_tls_cert_content: "{{ pem['kea.crt'] }}"
-    kea_api_tls_key_content: "{{ pem['kea.key'] }}"
     kea_api_tls_ca_content: "{{ pem['ca.crt'] }}"
+    ssl_certificates:
+      - name: kea-api
+        certificate:
+          content: "{{ pem['kea.crt'] }}"
+        key:
+          content: "{{ pem['kea.key'] }}"
     # Leases and reservations in MariaDB, in two databases.
     kea_hosts_database:
       type: mysql

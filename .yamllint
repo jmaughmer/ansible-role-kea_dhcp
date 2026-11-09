@@ -20,3 +20,4 @@ ignore: |
   .git/
   .cache/
   .ansible/
+  molecule/provided/vars/vault.yml

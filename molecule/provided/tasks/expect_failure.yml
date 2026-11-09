@@ -1,0 +1,19 @@
+---
+# Run part of the role with the settings the caller passes in vars, and check it
+# fails with the message in "expected". The rejection is the point, so it is
+# rescued here rather than ending the run. Takes expected and role_tasks.
+- name: Check the role refuses this configuration
+  block:
+    - name: Run the role
+      ansible.builtin.include_role:
+        name: ansible-role-kea_dhcp
+        tasks_from: "{{ role_tasks }}"
+
+    - name: The role should have failed already
+      ansible.builtin.fail:
+        msg: The role accepted this configuration.
+  rescue:
+    - name: Check it failed for the right reason
+      ansible.builtin.assert:
+        that: expected in (ansible_failed_result | string)
+        fail_msg: "Expected the failure to mention: {{ expected }}"

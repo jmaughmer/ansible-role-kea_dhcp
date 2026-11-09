@@ -13,6 +13,7 @@
          + (['postgresql'] if kea_db_init | bool and __kea_db_types is contains('postgresql') else [])
          + (['krb5-workstation'] if kea_ddns_enabled | bool and kea_ddns_gss_tsig_enabled | bool else [])
          + (['python3'] if kea_phpipam_sync_enabled | bool else [])
+         + (['python3-cryptography'] if __kea_tls_uses | length > 0 else [])
          + ['iproute']
          + kea_extra_packages) | unique
       }}

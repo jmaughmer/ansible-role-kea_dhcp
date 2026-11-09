@@ -1,6 +1,28 @@
 ---
 __kea_supported_major_versions: ["8", "9", "10"]
 
+# Certificates from ssl_certificates. Only the names are read here, so these
+# can't carry a private key.
+__kea_ssl_certificate_names: "{{ ssl_certificates | map(attribute='name', default='') | list }}"
+# The name becomes a file name.
+__kea_ssl_certificate_name_pattern: '^(?!.*\.\.)[A-Za-z0-9_*][A-Za-z0-9._*-]*$'
+__kea_default_tls_certificate: >-
+  {{ ansible_facts['fqdn'] if ansible_facts['fqdn'] in __kea_ssl_certificate_names
+     else __kea_ssl_certificate_names | first | default('') }}
+__kea_tls_dir: "{{ kea_config_dir }}/tls"
+# One entry for each listener with TLS on, when the list isn't empty.
+__kea_tls_uses: >-
+  {{ [] if ssl_certificates | length == 0 else
+     (([{'name': kea_api_tls_certificate if kea_api_tls_certificate | length > 0 else __kea_default_tls_certificate,
+         'cert': kea_api_tls_cert_file, 'key': kea_api_tls_key_file}]
+       if kea_api_tls_enabled | bool else [])
+      + ([{'name': kea_ha_tls_certificate if kea_ha_tls_certificate | length > 0 else __kea_default_tls_certificate,
+           'cert': kea_ha_tls_cert_file, 'key': kea_ha_tls_key_file}]
+         if kea_ha_enabled | bool and kea_ha_tls_enabled | bool else [])) | unique }}
+__kea_tls_names: "{{ __kea_tls_uses | map(attribute='name') | unique }}"
+# Variables earlier releases read, which no longer do anything.
+__kea_removed_tls_variables: '^kea_(api|ctrl_agent|ha)_tls_(cert|key)_content$'
+
 # Package and unit names per install source.
 __kea_sources:
   isc:

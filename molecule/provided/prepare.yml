@@ -1,0 +1,8 @@
+---
+- name: Prepare
+  hosts: all
+  tasks:
+    - name: Install openssl for the checks in verify.yml
+      ansible.builtin.dnf:
+        name: openssl
+        state: present

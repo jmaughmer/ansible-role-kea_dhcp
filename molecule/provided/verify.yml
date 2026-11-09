@@ -1,0 +1,188 @@
+---
+- name: Verify
+  hosts: all
+  vars_files:
+    - vars/main.yml
+    - vars/vault.yml
+  vars:
+    tls_dir: /etc/kea/tls
+    fqdn_crt: "{{ tls_dir }}/{{ ansible_fqdn }}.crt"
+    fqdn_key: "{{ tls_dir }}/{{ ansible_fqdn }}.key"
+    app_crt: "{{ tls_dir }}/app.example.test.crt"
+    supplied_files: "{{ [fqdn_crt, fqdn_key] }}"
+  tasks:
+    # Kept once as plain facts, because the refusal tests below replace
+    # ssl_certificates itself.
+    - name: Keep PEM for building pairs the role must refuse
+      ansible.builtin.set_fact:
+        app_cert_pem: "{{ (ssl_certificates | selectattr('name', 'eq', 'app.example.test') | first).certificate.content }}"
+        app_key_pem: "{{ (ssl_certificates | selectattr('name', 'eq', 'app.example.test') | first).key.content }}"
+        shared_key_pem: "{{ (ssl_certificates | selectattr('name', 'eq', 'shared.example.test') | first).key.content }}"
+      no_log: true
+
+    # ---------------------------------------------------------------------------
+    # What converge left behind
+    # ---------------------------------------------------------------------------
+    - name: Read the supplied files
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop: "{{ supplied_files }}"
+      register: installed
+
+    - name: Assert the certificate is 0644 and the key is for root and kea only
+      ansible.builtin.assert:
+        that:
+          - installed.results[0].stat.mode == '0644'
+          - installed.results[1].stat.mode == '0640'
+          - installed.results[1].stat.pw_name == 'root'
+          - installed.results[1].stat.gr_name == 'kea'
+        quiet: true
+
+    - name: Read the files for the other entries
+      ansible.builtin.stat:
+        path: "{{ tls_dir }}/{{ item }}"
+      loop: [app.example.test.key, shared.example.test.key]
+      register: others
+
+    - name: Assert keys for entries not in use were not written
+      ansible.builtin.assert:
+        that: others.results | selectattr('stat.exists') | list | length == 0
+        quiet: true
+
+    - name: Read the certificate paths
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop: ["{{ tls_dir }}/kea.crt", "{{ tls_dir }}/kea.key"]
+      register: links
+
+    - name: Assert they link to the entry named after the FQDN
+      ansible.builtin.assert:
+        that:
+          - links.results[0].stat.islnk and links.results[0].stat.lnk_source == fqdn_crt
+          - links.results[1].stat.islnk and links.results[1].stat.lnk_source == fqdn_key
+        quiet: true
+
+    - name: Check the supplied certificate is served
+      ansible.builtin.include_tasks: tasks/served_cert.yml
+      vars:
+        file: "{{ fqdn_crt }}"
+
+    - name: Call the API with the name and CA checked  # noqa: command-instead-of-module
+      ansible.builtin.command: >-
+        curl -sS --fail --cacert {{ tls_dir }}/ca.crt --resolve default.example.test:8004:127.0.0.1
+        -H 'Content-Type: application/json' -d '{"command": "version-get"}'
+        https://default.example.test:8004/
+      register: api
+      changed_when: false
+      failed_when: api.rc != 0 or (api.stdout | from_json | first).result != 0
+
+    # ---------------------------------------------------------------------------
+    # Configurations the role must refuse
+    # ---------------------------------------------------------------------------
+    - name: Fingerprint the installed files
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop: "{{ supplied_files }}"
+      register: before_rejects
+
+    - name: Refuse the variables this list replaced
+      ansible.builtin.include_tasks: tasks/expect_failure.yml
+      vars:
+        role_tasks: assert.yml
+        expected: ssl_certificates replaces
+        kea_api_tls_key_content: anything
+
+    - name: Refuse a name that isn't safe as a file name
+      ansible.builtin.include_tasks: tasks/expect_failure.yml
+      vars:
+        role_tasks: assert.yml
+        expected: safe as a file name
+        ssl_certificates:
+          - { name: ../evil, certificate: { content: x }, key: { content: x } }
+
+    - name: Refuse a chosen certificate that isn't listed
+      ansible.builtin.include_tasks: tasks/expect_failure.yml
+      vars:
+        role_tasks: assert.yml
+        expected: must name entries
+        kea_api_tls_certificate: missing
+
+    - name: Refuse two certificates for the same files
+      ansible.builtin.include_tasks: tasks/expect_failure.yml
+      vars:
+        role_tasks: assert.yml
+        expected: both use the same files
+        kea_ha_enabled: true
+        kea_ha_tls_enabled: true
+        kea_ha_tls_certificate: shared.example.test
+
+    - name: Refuse a key from another certificate
+      ansible.builtin.include_tasks: tasks/expect_failure.yml
+      vars:
+        role_tasks: tls_provided.yml
+        expected: does not match
+        kea_api_tls_certificate: app.example.test
+        ssl_certificates:
+          - name: app.example.test
+            certificate: { content: "{{ app_cert_pem }}" }
+            key: { content: "{{ shared_key_pem }}" }
+
+    - name: Refuse a key that isn't PEM
+      ansible.builtin.include_tasks: tasks/expect_failure.yml
+      vars:
+        role_tasks: tls_provided.yml
+        expected: the key is not valid PEM
+        kea_api_tls_certificate: app.example.test
+        ssl_certificates:
+          - name: app.example.test
+            certificate: { content: "{{ app_cert_pem }}" }
+            key: { content: not a key }
+
+    - name: Fingerprint the installed files again
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop: "{{ supplied_files }}"
+      register: after_rejects
+
+    - name: Assert the refused pairs changed no files
+      ansible.builtin.assert:
+        that: after_rejects.results | map(attribute='stat.checksum') | list == before_rejects.results | map(attribute='stat.checksum') | list
+        quiet: true
+
+    - name: Read where a refused pair would have gone
+      ansible.builtin.stat:
+        path: "{{ app_crt }}"
+      register: stray
+
+    - name: Assert it was not written
+      ansible.builtin.assert:
+        that: not stray.stat.exists
+        quiet: true
+
+    # ---------------------------------------------------------------------------
+    # Choosing another entry
+    # ---------------------------------------------------------------------------
+    - name: Choose another entry
+      ansible.builtin.include_role:
+        name: ansible-role-kea_dhcp
+      vars:
+        kea_api_tls_certificate: app.example.test
+
+    - name: Read the certificate path
+      ansible.builtin.stat:
+        path: "{{ tls_dir }}/kea.crt"
+      register: chosen
+
+    - name: Assert it links to the chosen entry
+      ansible.builtin.assert:
+        that: chosen.stat.islnk and chosen.stat.lnk_source == app_crt
+        quiet: true
+
+    - name: Check the chosen certificate is served
+      ansible.builtin.include_tasks: tasks/served_cert.yml
+      vars:
+        file: "{{ app_crt }}"
+
+    - name: Go back to the converged configuration
+      ansible.builtin.include_role:
+        name: ansible-role-kea_dhcp

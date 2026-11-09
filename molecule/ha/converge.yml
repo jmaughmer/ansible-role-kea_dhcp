@@ -66,8 +66,12 @@
     - name: Hand each node its certificate
       ansible.builtin.set_fact:
         kea_ha_tls_ca_content: "{{ files['ca.crt'] }}"
-        kea_ha_tls_cert_content: "{{ files[inventory_hostname ~ '.crt'] }}"
-        kea_ha_tls_key_content: "{{ files[inventory_hostname ~ '.key'] }}"
+        ssl_certificates:
+          - name: "{{ inventory_hostname }}"
+            certificate:
+              content: "{{ files[inventory_hostname ~ '.crt'] }}"
+            key:
+              content: "{{ files[inventory_hostname ~ '.key'] }}"
       vars:
         files: "{{ dict(pem.results | map(attribute='item') | zip(pem.results | map(attribute='content') | map('b64decode'))) }}"
       no_log: true

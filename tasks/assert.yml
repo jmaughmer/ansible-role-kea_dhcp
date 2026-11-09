@@ -15,6 +15,46 @@
     fail_msg: "kea_install_source must be one of {{ __kea_sources.keys() | list }}"
     quiet: true
 
+- name: Assert no certificate variables from earlier releases are set
+  ansible.builtin.assert:
+    that: lookup('ansible.builtin.varnames', __kea_removed_tls_variables, wantlist=true) | length == 0
+    fail_msg: >-
+      ssl_certificates replaces the kea_api_tls_*, kea_ctrl_agent_tls_* and kea_ha_tls_* cert_content
+      and key_content variables. Move the certificate and key to an entry in ssl_certificates.
+    quiet: true
+
+# These run on the list as a whole, with filters, so that no result holds a key.
+- name: Assert the supplied certificates
+  when: __kea_tls_uses | length > 0
+  block:
+    - name: Assert the supplied certificate entries
+      ansible.builtin.assert:
+        that:
+          - ssl_certificates | selectattr('certificate.content', 'undefined') | list | length == 0
+          - ssl_certificates | selectattr('key.content', 'undefined') | list | length == 0
+          - __kea_ssl_certificate_names | reject('match', __kea_ssl_certificate_name_pattern) | list | length == 0
+          - __kea_ssl_certificate_names | unique | length == __kea_ssl_certificate_names | length
+        fail_msg: >-
+          Every entry in ssl_certificates needs certificate.content, key.content and a unique name
+          that is safe as a file name (letters, digits, and . _ - *; no slashes, spaces or "..").
+        quiet: true
+
+    - name: Assert the chosen certificates are listed
+      ansible.builtin.assert:
+        that: __kea_tls_names | difference(__kea_ssl_certificate_names) | length == 0
+        fail_msg: >-
+          kea_api_tls_certificate and kea_ha_tls_certificate must name entries in ssl_certificates
+          ({{ __kea_tls_names | difference(__kea_ssl_certificate_names) | join(', ') }}).
+        quiet: true
+
+    - name: Assert each certificate path has one source
+      ansible.builtin.assert:
+        that: __kea_tls_uses | map(attribute='cert') | unique | length == __kea_tls_uses | length
+        fail_msg: >-
+          kea_ha_tls_certificate differs from the API's certificate, but both use the same files.
+          Give HA its own kea_ha_tls_cert_file and kea_ha_tls_key_file.
+        quiet: true
+
 - name: Assert API mode
   ansible.builtin.assert:
     that: kea_api_mode in ['auto', 'daemon', 'ctrl_agent']

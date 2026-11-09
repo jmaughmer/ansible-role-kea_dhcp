@@ -1,0 +1,22 @@
+---
+# Check the certificate the Kea API serves is the one in a file. Takes file.
+- name: Read the certificate served
+  ansible.builtin.shell: |
+    set -o pipefail
+    openssl s_client -connect 127.0.0.1:8004 </dev/null 2>/dev/null |
+      openssl x509 -noout -fingerprint -sha256
+  args:
+    executable: /bin/bash
+  register: __served
+  changed_when: false
+
+- name: "Read the certificate in {{ file }}"
+  ansible.builtin.command: openssl x509 -in {{ file | quote }} -noout -fingerprint -sha256
+  register: __on_disk
+  changed_when: false
+
+- name: "Assert the certificate served is {{ file }}"
+  ansible.builtin.assert:
+    that: __served.stdout == __on_disk.stdout
+    fail_msg: "Kea served {{ __served.stdout }}, but {{ file }} is {{ __on_disk.stdout }}"
+    quiet: true

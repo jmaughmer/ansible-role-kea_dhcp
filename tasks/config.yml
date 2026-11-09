@@ -43,40 +43,39 @@
     - Reload kea-dhcp6
 
 # Certificates are read when a listener opens, so these restart Kea.
-- name: Deploy TLS material for the API and HA
-  when: __kea_tls_files | length > 0
+- name: Deploy certificates from ssl_certificates
+  ansible.builtin.import_tasks: tls_provided.yml
+  when: __kea_tls_uses | length > 0
+
+- name: Deploy CA certificates for the API and HA
+  when: __kea_tls_ca_files | length > 0
   vars:
-    __kea_tls_files: >-
-      {{ ((([{'content': kea_api_tls_cert_content, 'dest': kea_api_tls_cert_file, 'mode': '0644'},
-             {'content': kea_api_tls_key_content, 'dest': kea_api_tls_key_file, 'mode': '0640'},
-             {'content': kea_api_tls_ca_content, 'dest': kea_api_tls_ca_file, 'mode': '0644'}]
+    __kea_tls_ca_files: >-
+      {{ ((([{'content': kea_api_tls_ca_content, 'dest': kea_api_tls_ca_file}]
             if kea_api_tls_enabled | bool else [])
-          + ([{'content': kea_ha_tls_cert_content, 'dest': kea_ha_tls_cert_file, 'mode': '0644'},
-              {'content': kea_ha_tls_key_content, 'dest': kea_ha_tls_key_file, 'mode': '0640'},
-              {'content': kea_ha_tls_ca_content, 'dest': kea_ha_tls_ca_file, 'mode': '0644'}]
+          + ([{'content': kea_ha_tls_ca_content, 'dest': kea_ha_tls_ca_file}]
              if kea_ha_enabled | bool and kea_ha_tls_enabled | bool else []))
          | selectattr('content', 'truthy') | list) }}
   block:
-    - name: Create the TLS directories
+    - name: Create the CA directories
       ansible.builtin.file:
         path: "{{ item }}"
         state: directory
         owner: root
         group: "{{ __kea_group }}"
         mode: "0750"
-      loop: "{{ __kea_tls_files | map(attribute='dest') | map('dirname') | unique }}"
+      loop: "{{ __kea_tls_ca_files | map(attribute='dest') | map('dirname') | unique }}"
 
-    - name: Write TLS files
+    - name: Write CA certificates
       ansible.builtin.copy:
         content: "{{ item.content }}"
         dest: "{{ item.dest }}"
         owner: root
         group: "{{ __kea_group }}"
-        mode: "{{ item.mode }}"
-      loop: "{{ __kea_tls_files }}"
+        mode: "0644"
+      loop: "{{ __kea_tls_ca_files }}"
       loop_control:
         label: "{{ item.dest }}"
-      no_log: true
       notify: Restart kea
 
 - name: Configure Kerberos for GSS-TSIG

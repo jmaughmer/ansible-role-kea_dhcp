@@ -1,0 +1,103 @@
+---
+# Certificates and keys come from the ssl_certificates list the Apache, phpIPAM
+# and MariaDB roles also read. Only entries in use are written here, because the
+# kea group can read what is in this directory. Every loop runs over names or
+# indexes, not entries, so no task result carries a private key in its "item".
+
+# The pairs are checked before any file is written, so a bad one can't stop Kea
+# at its next restart.
+- name: Read the supplied certificates
+  community.crypto.x509_certificate_info:
+    content: "{{ (ssl_certificates | selectattr('name', 'eq', item) | first).certificate.content }}"
+  loop: "{{ __kea_tls_names }}"
+  register: __kea_ssl_cert_info
+  failed_when: false
+
+- name: Read the supplied private keys
+  community.crypto.openssl_privatekey_info:
+    content: "{{ (ssl_certificates | selectattr('name', 'eq', item) | first).key.content }}"
+  loop: "{{ __kea_tls_names }}"
+  register: __kea_ssl_key_info
+  failed_when: false
+  no_log: true
+
+- name: Check each key belongs to its certificate
+  ansible.builtin.assert:
+    that:
+      - __cert.public_key is defined
+      - __key.public_key is defined
+      - __cert.public_key == __key.public_key
+      - not __cert.expired
+    fail_msg: >-
+      ssl_certificates entry {{ __kea_tls_names[item] }}:
+      {{ 'the certificate is not valid PEM' if __cert.public_key is not defined
+         else 'the key is not valid PEM or has a passphrase, which Kea cannot prompt for' if __key.public_key is not defined
+         else 'the key does not match the certificate' if __cert.public_key != __key.public_key
+         else 'the certificate has expired' }}.
+    quiet: true
+  vars:
+    __cert: "{{ __kea_ssl_cert_info.results[item] }}"
+    __key: "{{ __kea_ssl_key_info.results[item] }}"
+  loop: "{{ range(__kea_tls_names | length) | list }}"
+  loop_control:
+    label: "{{ __kea_tls_names[item] }}"
+
+- name: Create the TLS directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: "{{ __kea_group }}"
+    mode: "0750"
+  loop: >-
+    {{ ([__kea_tls_dir]
+        + __kea_tls_uses | map(attribute='cert') | map('dirname') | list
+        + __kea_tls_uses | map(attribute='key') | map('dirname') | list) | unique }}
+
+- name: Install the certificates
+  ansible.builtin.copy:
+    dest: "{{ __kea_tls_dir }}/{{ item }}.crt"
+    content: "{{ (ssl_certificates | selectattr('name', 'eq', item) | first).certificate.content }}"
+    owner: root
+    group: "{{ __kea_group }}"
+    mode: "0644"
+  loop: "{{ __kea_tls_names }}"
+  notify: Restart kea
+
+- name: Install the private keys
+  ansible.builtin.copy:
+    dest: "{{ __kea_tls_dir }}/{{ item }}.key"
+    content: "{{ (ssl_certificates | selectattr('name', 'eq', item) | first).key.content }}"
+    owner: root
+    group: "{{ __kea_group }}"
+    mode: "0640"
+  loop: "{{ __kea_tls_names }}"
+  no_log: true
+  diff: false
+  notify: Restart kea
+
+# The Kea configuration and the phpIPAM sync keep the same paths whichever entry
+# is in use.
+- name: Link the certificate paths
+  ansible.builtin.file:
+    path: "{{ item.cert }}"
+    src: "{{ __kea_tls_dir }}/{{ item.name }}.crt"
+    state: link
+    force: true
+  loop: "{{ __kea_tls_uses }}"
+  loop_control:
+    label: "{{ item.cert }}"
+  when: item.cert != __kea_tls_dir ~ '/' ~ item.name ~ '.crt'
+  notify: Restart kea
+
+- name: Link the key paths
+  ansible.builtin.file:
+    path: "{{ item.key }}"
+    src: "{{ __kea_tls_dir }}/{{ item.name }}.key"
+    state: link
+    force: true
+  loop: "{{ __kea_tls_uses }}"
+  loop_control:
+    label: "{{ item.key }}"
+  when: item.key != __kea_tls_dir ~ '/' ~ item.name ~ '.key'
+  notify: Restart kea

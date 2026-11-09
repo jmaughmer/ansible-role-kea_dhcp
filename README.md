@@ -260,9 +260,13 @@ kea_dhcp6_enabled: true           # both families get their own HA relationship
 - Lease updates between peers carry MAC addresses and host names, so turn on HTTPS. Each node needs a certificate signed by a CA all peers trust, with the node's IP address as a subjectAltName and both `serverAuth` and `clientAuth` extended key usage. The node uses it for its own listener and for its connections to the partner. With `kea_ha_tls_require_client_certs` (the default), the listener refuses any peer without such a certificate:
   ```yaml
   kea_ha_tls_enabled: true
-  kea_ha_tls_cert_content: "{{ vault_kea_ha_cert }}"    # this node's certificate
-  kea_ha_tls_key_content: "{{ vault_kea_ha_key }}"
   kea_ha_tls_ca_content: "{{ vault_ca }}"
+  ssl_certificates:                                     # see "TLS certificates"
+    - name: "{{ ansible_facts['fqdn'] }}"               # this node's certificate
+      certificate:
+        content: "{{ vault_kea_ha_cert }}"
+      key:
+        content: "{{ vault_kea_ha_key }}"
   ```
   The files default to the API's (`kea_api_tls_*_file`), so one certificate can serve both. Without a dedicated listener, peers connect to kea-ctrl-agent, so `kea_ha_tls_enabled` must then equal `kea_api_tls_enabled`.
 - `kea_ha_basic_auth_user` and `kea_ha_basic_auth_password` make the HA client send credentials. Only kea-ctrl-agent checks them, which happens without a dedicated listener. The dedicated listener does not authenticate requests, so protect it with client certificates and the peer-only firewall rules above.
@@ -320,9 +324,18 @@ kea_api_users:
   - { user: admin, password: "{{ vault_kea_admin_password }}" }
   - { user: phpipam, password: "{{ vault_kea_phpipam_password }}" }
 kea_api_tls_enabled: true          # optional: HTTPS
-kea_api_tls_cert_content: "{{ vault_kea_cert }}"
-kea_api_tls_key_content: "{{ vault_kea_key }}"
 kea_api_tls_ca_content: "{{ vault_ca }}"
+ssl_certificates:                  # see "TLS certificates"
+  - name: kea1.example.com
+    certificate:
+      content: |
+        -----BEGIN CERTIFICATE-----
+        ...
+        -----END CERTIFICATE-----
+    key:
+      content: !vault |
+        $ANSIBLE_VAULT;1.1;AES256
+        ...
 
 # Reservations added through the API are stored in a hosts database.
 kea_hosts_database:
@@ -339,6 +352,16 @@ API passwords are written to files in `/etc/kea` (mode 0640) and referenced with
 When `kea_api_host` is not a loopback address, the role requires `kea_api_users`. Anyone who can reach an unauthenticated API can reconfigure or stop Kea. If a firewall or VPN already guards the port, set `kea_api_allow_unauthenticated: true`.
 
 With `kea_api_tls_cert_required: true`, clients must also present a certificate signed by `kea_api_tls_ca_file`.
+
+### TLS certificates
+
+Certificates and keys for the API and HA come from `ssl_certificates`, the list the Apache, phpIPAM and MariaDB roles also read, so one inventory variable can serve every role on a host.
+
+- The API uses `kea_api_tls_certificate` if you set it, then the entry named after the host's FQDN, then the first entry. HA uses `kea_ha_tls_certificate`, which defaults to the API's choice. If HA uses a different entry, also set `kea_ha_tls_cert_file` and `kea_ha_tls_key_file`.
+- Only entries in use are written, as `/etc/kea/tls/<name>.crt` (0644) and `<name>.key` (`root:kea` 0640). `kea_api_tls_cert_file`, `kea_api_tls_key_file` and the HA paths link to them.
+- Put any intermediate certificates in `certificate.content`, after the server certificate. `ssl_certificates` has no CA field, so CAs stay in `kea_api_tls_ca_content` and `kea_ha_tls_ca_content`.
+- Encrypt each key with Ansible Vault (`ansible-vault encrypt_string --stdin-name content < server.key`). Before writing anything, the role checks that each certificate and key are valid PEM, the key has no passphrase, the key belongs to the certificate, and the certificate hasn't expired. If a check fails, the run stops with the existing files and running Kea untouched. Keys stay out of the output, including with `-vvv` and `--diff`.
+- If the list is empty, the role writes no certificates and expects something else to put the files at those paths.
 
 `reservation-add` and `reservation-del` need a hosts database. Reservations written in the configuration file are read-only through the API.
 
@@ -553,6 +576,7 @@ All variables, with comments, are in [`defaults/main.yml`](defaults/main.yml). T
 | `kea_api_mode` | `auto` (see [API](#api-and-run-time-reservations-phpipam-and-others)) |
 | `kea_api_host` / `kea_api_users` | `127.0.0.1` / `[]` (users are required for a non-loopback host) |
 | `kea_api_tls_enabled` / `kea_ha_tls_enabled` | `false` / `false` |
+| `ssl_certificates` | `[]` (see [TLS certificates](#tls-certificates)) |
 | `kea_ha_enabled` | `false` |
 | `kea_pxe_enabled` | `false` |
 | `kea_ping_check_enabled` | `false` |
