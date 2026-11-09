@@ -494,6 +494,66 @@ Quote IPv6 addresses in YAML. Unquoted, an all-digit address such as `2001:0:0:0
 
 Classic TSIG keys (`kea_ddns_tsig_keys`) are supported for BIND-style servers. Windows DNS does not support them.
 
+### Clients that send no hostname (IP phones, printers, IoT)
+
+Windows DHCP can only register a name the client sends, so devices such as Cisco IP phones, which often send neither the Hostname option (12) nor the Client FQDN option (81), never appear in DNS. Kea has two ways to name them.
+
+**Generated names (the default).** With `kea_ddns_replace_client_name: when-not-present`, Kea makes up a name from the prefix and the leased address, so a phone at 10.0.20.15 is registered as `dhcp-10-0-20-15.corp.example.com`. The name follows the address, not the device. Change the prefix globally, or per subnet for a voice VLAN:
+
+```yaml
+kea_ddns_replace_client_name: when-not-present   # never | always | when-present | when-not-present
+kea_ddns_generated_prefix: dhcp
+kea_dhcp4_subnets:
+  - id: 20
+    subnet: 10.0.20.0/24                          # voice VLAN
+    pools: [{ pool: 10.0.20.100 - 10.0.20.250 }]
+    ddns-generated-prefix: phone                  # phone-10-0-20-15.voice.corp.example.com
+    ddns-qualifying-suffix: voice.corp.example.com.
+    # Or keep phones out of DNS entirely:
+    # ddns-send-updates: false
+```
+
+A reservation's `hostname` always wins over a generated name, so reserved devices keep a fixed name.
+
+**Names built from the MAC address (`ddns_tuning` hook).** The `ddns_tuning` hook (open source from Kea 3.0, in ISC's packages) computes the hostname from an expression. This example names a phone that sends no hostname `SEP<mac>`, the device name Cisco CUCM uses, and keeps the client's own name when it sends one:
+
+```yaml
+kea_dhcp4_extra_hooks:
+  - library: "{{ kea_hooks_dir }}/libdhcp_ddns_tuning.so"
+    parameters: {}          # no global expression: only subnets that set one are affected
+kea_dhcp4_subnets:
+  - id: 20
+    subnet: 10.0.20.0/24
+    pools: [{ pool: 10.0.20.100 - 10.0.20.250 }]
+    ddns-qualifying-suffix: voice.corp.example.com.
+    user-context:
+      ddns-tuning:
+        hostname-expr: "ifelse(option[12].exists, option[12].text, concat('SEP', hexstring(pkt4.mac, '')))"
+```
+
+A phone with MAC `00:1e:7a:12:34:56` is registered as `SEP001e7a123456.voice.corp.example.com`. Notes:
+
+- Kea's expressions have no upper-case function, so the MAC part is lower case. DNS names are case-insensitive, so lookups for `SEP001E7A123456` still match.
+- The expression replaces the client's name for every client in the subnet. Without the `ifelse`, devices that do send a name are renamed too. A reservation's `hostname` still takes priority.
+- `parameters.hostname-expr` sets a server-wide expression; a subnet's `user-context` overrides it. For DHCPv6, load the hook in `kea_dhcp6_extra_hooks` and use `pkt6` fields, for example the DUID.
+- `pkt4.mac` is the client hardware address as seen in the packet. Behind a DHCP relay it is still the client's MAC, not the relay's.
+
+**Cisco phone options.** Option 150 (the CUCM TFTP server list) is not a standard option, so define it once and send it on the voice subnet. Option 66 (`tftp-server-name`) is the fallback some models use:
+
+```yaml
+kea_dhcp4_option_def:
+  - { name: cisco-tftp, code: 150, type: ipv4-address, array: true, space: dhcp4 }
+kea_dhcp4_subnets:
+  - id: 20
+    subnet: 10.0.20.0/24
+    option-data:
+      - { name: routers, data: 10.0.20.1 }
+      - { name: cisco-tftp, data: "10.0.0.10, 10.0.0.11" }
+      - { name: tftp-server-name, data: 10.0.0.10 }
+```
+
+Phones learn the voice VLAN from CDP or LLDP on the switch, not from DHCP, so a separate voice subnet keeps these options, the DNS suffix and longer lease times to phones only.
+
 ## Firewall
 
 When firewalld is running (`kea_firewalld_manage`, zone `kea_firewalld_zone`):
