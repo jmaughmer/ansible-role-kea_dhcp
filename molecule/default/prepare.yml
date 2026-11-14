@@ -1,4 +1,51 @@
 ---
+# Runs once, after the VMs are created:
+#   - play 1 gets the boxes ansible-ready: the lab templates self-configure
+#     labnet DNS since 2026-11-13, but the resolv.conf task cures a DHCP
+#     hiccup, EL8 needs a modern Python for ansible-core, and the dnf
+#     priming keeps a boot-time DNS stall from killing the first metadata
+#     fetch (Curl error 6);
+#   - play 2 lays out the fapolicyd fixture the role and verify expect.
+# Privilege comes from the scenario's group_vars (ansible_become), because the
+# driver's SSH lands as a sudo user.
+- name: Get the VMs ready for ansible-core
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Wait for SSH to be up after first boot
+      ansible.builtin.wait_for_connection:
+
+    # The AlmaLinux cloud templates were first booted on the LAN, so they can
+    # carry a stale /etc/resolv.conf that EL9's cloud images never update
+    # (NM dns=none; cloud-init owns the file). Rewrite it from the lease.
+    - name: Point resolv.conf at the labnet DNS from DHCP
+      ansible.builtin.raw: |
+        gw=$(ip -4 route | awk '/default via/ {print $3; exit}')
+        test -n "$gw"
+        dns=""
+        for d in $(nmcli -t -f IP4.DNS device show eth0 | cut -d: -f2); do
+          [ "$d" = "$gw" ] && dns=$d
+        done
+        printf 'nameserver %s\n' "${dns:-$gw}" > /etc/resolv.conf
+      changed_when: true
+
+    # Current ansible-core refuses a target whose only Python is 3.6 (RHEL 8);
+    # raw needs no Python on the target, so install 3.11 before play 2 runs.
+    - name: Install Python 3.11 on EL8 hosts
+      ansible.builtin.raw: >-
+        /bin/sh -c "if grep -q ' release 8' /etc/redhat-release
+        && ! rpm -q --quiet python3.11;
+        then dnf -y -q install python3.11 && echo installed; fi"
+      register: el8_python
+      changed_when: "'installed' in el8_python.stdout"
+
+    - name: Prime DNS and dnf metadata
+      ansible.builtin.raw: >-
+        /bin/sh -c "for i in 1 2 3 4 5; do
+        if getent hosts mirrors.almalinux.org && dnf -y -q makecache;
+        then exit 0; fi; sleep 10; done; exit 1"
+      changed_when: false
+
 - name: Prepare
   hosts: all
   tasks:

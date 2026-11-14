@@ -3,7 +3,7 @@
   hosts: all
   gather_facts: false
   vars:
-    # The el8 scenario sets kea_api_mode: ctrl_agent to cover kea-ctrl-agent.
+    # Set kea_api_mode: ctrl_agent to cover kea-ctrl-agent instead.
     ctrl_agent: "{{ (kea_api_mode | default('auto')) == 'ctrl_agent' }}"
     api_urls: >-
       {{ {'dhcp4': 'http://127.0.0.1:8000/', 'dhcp6': 'http://127.0.0.1:8000/', 'd2': 'http://127.0.0.1:8000/'}

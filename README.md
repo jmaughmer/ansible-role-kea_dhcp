@@ -14,11 +14,7 @@ Features:
 - Logging options: file, syslog or stdout, with severity, rotation, extra loggers and forensic lease logging.
 - SELinux port and file labeling, a fapolicyd trust file for non-RPM files, and FIPS checks (TSIG algorithms, crypto policy for AD Kerberos).
 - Configuration changes are applied with a reload, so Kea keeps its leases in memory and HA keeps its state. Only package, systemd and certificate changes restart Kea.
-- Molecule tests with podman. They cover:
-  - a single server on EL8, EL9 and EL10, with Kea from ISC or AppStream
-  - two-node HA clusters in every mode, with failover
-  - the move from kea-ctrl-agent to the daemons' API
-  - MariaDB databases, the API over HTTPS, and the phpIPAM sync
+- Molecule tests on the Proxmox test lab's VMs (EL9 and EL10, SELinux enforcing): DHCPv4/v6, DDNS, PXE, the control API, reservations, logging and the fapolicyd trust file; see **Testing**.
 
 ## Requirements
 
@@ -652,32 +648,47 @@ See [CHANGELOG.md](CHANGELOG.md) for changes that need action when upgrading the
 
 ## Testing
 
-Tests run locally with podman, on the AlmaLinux 10 WSL distribution (any EL10 host works too). The repository directory must be named `ansible-role-kea_dhcp`.
+Tests run on the Proxmox test lab. `molecule test` converges two real KVM VMs cloned from the
+lab's fleet onto its isolated labnet network — EL9 and EL10 side by side, SELinux enforcing and
+firewalld running — and covers DHCPv4/v6, DDNS, PXE, the control API, run-time reservations,
+logging and the port check, converging a second time to prove idempotence before `verify.yml`
+checks every daemon, the API answers, the configuration and the fapolicyd trust file. The
+sequence is destroy → syntax → create → prepare → converge → idempotence → verify → destroy.
+
+Tests run on the lab's molecule control machine: `molecule`, `molecule-proxmox` and the role's
+collections are preinstalled there, and the driver's connection secrets and SSH key live only in
+its own config files. Nothing lab-specific is in this repo beyond the fleet template names and
+the default VMID band (9220–9221); hosts, tokens and subnets never leave the control machine.
+The Test Lab project's `molecule-labnet/` directory documents the lab itself.
+`LAB_TEMPLATE_EL9`/`LAB_TEMPLATE_EL10` pick each box's template (`template-alma8`,
+`template-alma9` or `template-alma10`):
 
 ```bash
-scripts/test.sh              # lint + every scenario
-scripts/test.sh lint         # yamllint + ansible-lint only
-scripts/test.sh default      # DHCPv4/v6, DDNS, PXE, API, reservations, logging, port check on EL9 and EL10
-scripts/test.sh ha           # two-node hot-standby cluster: HA over HTTPS, peer-only firewall, failover
-scripts/test.sh ha-lb        # the same in load-balancing mode
-scripts/test.sh ha-backup    # the same in passive-backup mode (no failover)
-scripts/test.sh el8          # the default scenario on EL8 under ansible-core 2.16, API on kea-ctrl-agent
-scripts/test.sh migrate      # kea-ctrl-agent to daemon API on a live host: firewall, reload not restart
-scripts/test.sh integration  # MariaDB lease/hosts databases with kea_db_init, API over HTTPS with
-                             # client certificates, phpIPAM sync and its deletion guards (mock phpIPAM)
-scripts/test.sh distro       # the default scenario with Kea from AppStream on EL10
+molecule test                                   # EL9 + EL10
+LAB_TEMPLATE_EL9=template-alma8 molecule test   # exercise the EL8 interpreter path too
 ```
 
-The containers can't cover these, so test them on a VM before relying on them:
-- SELinux in enforcing mode (it is disabled inside containers)
-- fapolicyd enforcement (the tests only check the trust file)
-- GSS-TSIG against Active Directory
-- PostgreSQL databases
-- EPEL's older Kea on EL8 and EL9
+The VMIDs come from `LAB_VMID_0/1` and default to the pinned 9220–9221 band, so a plain
+`molecule test` means one lab run of this repo at a time. For several runs of this repo at once,
+use the lab's `mlab` wrapper, which claims a free VMID band (and an isolated ephemeral
+directory) per run:
 
-The script installs podman, Python and git with dnf if they are missing. It builds two virtualenvs under `.cache/test/`: one with current ansible-core, molecule, molecule-plugins[podman], ansible-lint and yamllint, and one with ansible-core 2.16 for EL8. Each virtualenv gets its own pinned collections.
+```bash
+/root/labnet/mlab test -s default               # parallel-safe run on the control machine
+```
 
-The scenarios run systemd inside the `docker.io/almalinux/<n>-init` images and need internet access to Docker Hub, the ISC repository and EPEL. Podman runs rootless by default. If rootless systemd containers don't work in your WSL setup (for example cgroup v2 delegation is missing), run `sudo scripts/test.sh` to use rootful podman. WSL needs systemd enabled (`[boot] systemd=true` in `/etc/wsl.conf`) for rootless podman.
+Lint with `yamllint .` and `ansible-lint` (configured by [`.yamllint`](.yamllint) and
+[`.ansible-lint`](.ansible-lint)). There is no CI; run the lint and Molecule from the control
+machine.
+
+Not covered by the scenario: the HA topologies — hot-standby with failover, load-balancing and
+passive-backup modes (the removed `ha`/`ha-lb`/`ha-backup` scenarios); the kea-ctrl-agent to
+daemon-API migration on a live host (`migrate`) and the ctrl-agent API mode itself (`el8`); the
+MariaDB lease/hosts databases, kea_db_init and the phpIPAM sync with its deletion guards against
+a mock phpIPAM (`integration`); Kea from AppStream rather than ISC packages (`distro`); the
+supplied-certificate path with vaulted test keys (`provided`); the EL8-on-ansible-core-2.16 pin;
+and fapolicyd enforcement, GSS-TSIG against Active Directory, PostgreSQL databases and EPEL's
+older Kea, none of which the container matrix covered either.
 
 ## License
 

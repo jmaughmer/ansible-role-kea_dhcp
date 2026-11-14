@@ -4,7 +4,7 @@
   vars:
     kea_dhcp6_enabled: true
     kea_ddns_enabled: true
-    # The distro scenario reuses this play; perfdhcp is an ISC package.
+    # perfdhcp is an ISC package, so it is only expected from ISC sources.
     kea_extra_packages: "{{ ['isc-kea-perfdhcp'] if (kea_install_source | default('isc')) == 'isc' else [] }}"
     kea_dhcp4_interfaces: ["*"]
     kea_dhcp6_interfaces: ["*"]

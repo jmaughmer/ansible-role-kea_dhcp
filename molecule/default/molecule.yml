@@ -1,38 +1,70 @@
 ---
-# Collections are installed by scripts/test.sh, pinned per ansible-core.
+# Tests run on the Proxmox test lab: two real KVM VMs cloned from the lab
+# fleet onto the isolated labnet network, EL9 and EL10 side by side
+# (LAB_TEMPLATE_EL9/LAB_TEMPLATE_EL10 pick the templates), with SELinux
+# enforcing and firewalld running — the paths containers never could.
+# converge.yml and verify.yml are the repo's own and need nothing lab-aware:
+# the playbooks run on every host in the play.
+#
+# The driver's SSH lands as a sudo user, so the inline group_vars set
+# ansible_become and every task of the repo's own playbooks runs privileged
+# through it. All Proxmox connection details live in the driver's secrets
+# file on the control machine, not here.
+#
+# Default VMIDs are the repo's 9220-9221 band, via LAB_VMID_0/1 so the lab's
+# `mlab` runner can claim a free band per run and allow parallel runs of this
+# repo; a plain molecule test uses the pinned band, one lab run at a time.
+#
+# Run on the lab's molecule control machine:
+#   /root/labnet/mlab test -s default              # parallel-safe, recommended
+#   molecule test                                  # pinned band
+#   LAB_TEMPLATE_EL9=template-alma8 molecule test  # exercise the EL8 box too
+role_name_check: 1
+
 dependency:
   name: galaxy
-  enabled: false
+  enabled: false        # collections preinstalled on the control machine
+prerun: false
+
 driver:
-  name: podman
-# Names end in TEST_RUN_ID, which scripts/test.sh sets per checkout, so
-# several checkouts can run the same scenario at once.
+  name: molecule-proxmox
+  options:
+    proxmox_secrets: ${LAB_PROXMOX_SECRETS:-/root/.config/molecule/proxmox-secrets.yml}
+    node: ${LAB_NODE:-galactica}
+    validate_certs: false   # the lab's PVE uses its self-signed cert
+    ssh_user: labadmin
+    ssh_identity_file: /root/.ssh/id_ed25519
+    full: true
+    pool: testlab
+    timeout: 300
+
 platforms:
-  - name: kea-el9-${TEST_RUN_ID:-local}
-    image: docker.io/almalinux/9-init
-    pre_build_image: true
-    command: /sbin/init
-    systemd: always
-    privileged: true
-    rootless: true
-  - name: kea-el10-${TEST_RUN_ID:-local}
-    image: docker.io/almalinux/10-init
-    pre_build_image: true
-    command: /sbin/init
-    systemd: always
-    privileged: true
-    rootless: true
+  - name: kea-default-el9
+    template_name: ${LAB_TEMPLATE_EL9:-template-alma9}
+    newid: ${LAB_VMID_0:-9220}
+
+  - name: kea-default-el10
+    template_name: ${LAB_TEMPLATE_EL10:-template-alma10}
+    newid: ${LAB_VMID_1:-9221}
+
 provisioner:
   name: ansible
   env:
-    ANSIBLE_ROLES_PATH: "${MOLECULE_PROJECT_DIRECTORY}/.."
+    ANSIBLE_ROLES_PATH: "${MOLECULE_PROJECT_DIRECTORY}/..:/root/.ansible/roles"
   inventory:
     group_vars:
       all:
-        # Keep test containers from changing the host's kernel settings.
+        # The driver's SSH lands as a sudo user (unlike a container's root);
+        # make every task of the repo's own playbooks become-root.
+        ansible_become: true
+        # The value the scenario matrix has always tested. The VMs own their
+        # kernels, so the role could manage the sysctls here too; flipping it
+        # would change what the idempotence check covers, so it stays off.
         kea_sysctl_manage: false
+
 verifier:
   name: ansible
+
 scenario:
   test_sequence:
     - destroy
