@@ -492,7 +492,7 @@ Classic TSIG keys (`kea_ddns_tsig_keys`) are supported for BIND-style servers. W
 
 ### Clients that send no hostname (IP phones, printers, IoT)
 
-Windows DHCP can only register a name the client sends, so devices such as Cisco IP phones, which often send neither the Hostname option (12) nor the Client FQDN option (81), never appear in DNS. Kea has two ways to name them.
+Windows DHCP can only register a name the client sends, so devices such as Cisco IP phones, which often send neither the Hostname option (12 in DHCPv4, 24 in DHCPv6) nor the Client FQDN option (81 in DHCPv4, 39 in DHCPv6), never appear in DNS. Kea has two ways to name them, and both work for IPv6 as well as IPv4.
 
 **Generated names (the default).** With `kea_ddns_replace_client_name: when-not-present`, Kea makes up a name from the prefix and the leased address, so a phone at 10.0.20.15 is registered as `dhcp-10-0-20-15.corp.example.com`. The name follows the address, not the device. Change the prefix globally, or per subnet for a voice VLAN:
 
@@ -509,9 +509,21 @@ kea_dhcp4_subnets:
     # ddns-send-updates: false
 ```
 
+DHCPv6 works the same way; the address text in the generated name is the leased IPv6 address hyphenated, each `:` becoming `-` and a `::` becoming `--`:
+
+```yaml
+kea_dhcp6_subnets:
+  - id: 20
+    subnet: "2001:db8:20::/64"                        # same voice VLAN
+    pools: [{ pool: "2001:db8:20::1000 - 2001:db8:20::1fff" }]
+    ddns-generated-prefix: phone
+    ddns-qualifying-suffix: voice.corp.example.com.
+    # phone-2001-db8-20--15.voice.corp.example.com
+```
+
 A reservation's `hostname` always wins over a generated name, so reserved devices keep a fixed name.
 
-**Names built from the MAC address (`ddns_tuning` hook).** The `ddns_tuning` hook (open source from Kea 3.0, in ISC's packages) computes the hostname from an expression. This example names a phone that sends no hostname `SEP<mac>`, the device name Cisco CUCM uses, and keeps the client's own name when it sends one:
+**Names built from the MAC address (`ddns_tuning` hook).** The `ddns_tuning` hook (open source from Kea 3.0, in ISC's packages) computes the hostname from an expression. This example names a phone that sends no hostname `SEP<MAC>`, the device name Cisco CUCM uses, and keeps the client's own name when it sends one:
 
 ```yaml
 kea_dhcp4_extra_hooks:
@@ -524,15 +536,33 @@ kea_dhcp4_subnets:
     ddns-qualifying-suffix: voice.corp.example.com.
     user-context:
       ddns-tuning:
-        hostname-expr: "ifelse(option[12].exists, option[12].text, concat('SEP', hexstring(pkt4.mac, '')))"
+        hostname-expr: "ifelse(option[12].exists, option[12].text, concat('SEP', ucase(hexstring(pkt4.mac, ''))))"
 ```
 
-A phone with MAC `00:1e:7a:12:34:56` is registered as `SEP001e7a123456.voice.corp.example.com`. Notes:
+A phone with MAC `00:1e:7a:12:34:56` is registered as `SEP001E7A123456.voice.corp.example.com`. Notes:
 
-- Kea's expressions have no upper-case function, so the MAC part is lower case. DNS names are case-insensitive, so lookups for `SEP001E7A123456` still match.
+- `ucase` makes the MAC part upper case, so the name matches the form CUCM shows. It needs Kea 2.5.2 or newer; drop it on older releases and the name is simply lower case. DNS names are case-insensitive either way, so lookups for `SEP001e7a123456` still match.
 - The expression replaces the client's name for every client in the subnet. Without the `ifelse`, devices that do send a name are renamed too. A reservation's `hostname` still takes priority.
-- `parameters.hostname-expr` sets a server-wide expression; a subnet's `user-context` overrides it. For DHCPv6, load the hook in `kea_dhcp6_extra_hooks` and use `pkt6` fields, for example the DUID.
+- `parameters.hostname-expr` sets a server-wide expression; a subnet's `user-context` overrides it. The same holds in DHCPv6, which has its own example below.
 - `pkt4.mac` is the client hardware address as seen in the packet. Behind a DHCP relay it is still the client's MAC, not the relay's.
+
+**The same name on DHCPv6.** A DHCPv6 packet carries no MAC at all, so there is no `pkt4.mac` counterpart. The client's identity is its DUID, which arrives as option 1, and on phones that DUID is derived from the MAC: DUID-LL and DUID-LLT both end with it. Taking the last six bytes therefore rebuilds the same name:
+
+```yaml
+kea_dhcp6_extra_hooks:
+  - library: "{{ kea_hooks_dir }}/libdhcp_ddns_tuning.so"
+    parameters: {}
+kea_dhcp6_subnets:
+  - id: 20
+    subnet: "2001:db8:20::/64"
+    pools: [{ pool: "2001:db8:20::1000 - 2001:db8:20::1fff" }]
+    ddns-qualifying-suffix: voice.corp.example.com.
+    user-context:
+      ddns-tuning:
+        hostname-expr: "ifelse(option[39].exists, option[39].text, concat('SEP', ucase(hexstring(substring(option[1].hex, -6, 6), ''))))"
+```
+
+The same phone, MAC `00:1e:7a:12:34:56`, now gets its A and AAAA records under one name: `SEP001E7A123456.voice.corp.example.com`. Everything noted above applies here too; one addition: DUIDs that do not embed a MAC (DUID-EN, randomized DUIDs) still get a stable name, but it will not match the device's IPv4 name, so check the DUID types your phones send if they must match.
 
 **Cisco phone options.** Option 150 (the CUCM TFTP server list) is not a standard option, so define it once and send it on the voice subnet. Option 66 (`tftp-server-name`) is the fallback some models use:
 
